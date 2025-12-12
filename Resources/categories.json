@@ -177,5 +177,66 @@
     "lost_money",
     "new mobile",
     "other"
+  ],
+  "credit": [
+    "salary",
+    "bonus_incentive",
+    "freelance_income",
+    "business_income",
+    "investment_returns",
+    "rental_income",
+    "gift_received",
+    "loan_borrowed",
+    "refund_cashback",
+    "reimbursement",
+    "selling_items",
+    "tuition_income",
+    "other"
+  ],
+  "salary": [
+    "salary_monthly",
+    "salary_quarterly",
+    "salary_annual",
+    "overtime_pay",
+    "bonuses",
+    "incentives",
+    "gratuity",
+    "other"
+  ],
+  "income": [
+    "freelance_projects",
+    "consultant_fees",
+    "side_gig",
+    "tutoring_classes",
+    "part_time_job",
+    "online_earnings",
+    "other"
+  ],
+  "investment": [
+    "stock_dividends",
+    "mutual_fund_returns",
+    "fds_interest",
+    "savings_interest",
+    "crypto_gains",
+    "property_sale",
+    "other"
+  ],
+  "refunds": [
+    "shopping_refund",
+    "cashback_rewards",
+    "insurance_claim",
+    "tax_refund",
+    "utility_deposit_return",
+    "security_deposit_return",
+    "other"
+  ],
+  "borrowing": [
+    "personal_loan",
+    "home_loan",
+    "car_loan",
+    "education_loan",
+    "business_loan",
+    "friends_family_loan",
+    "other"
   ]
 }

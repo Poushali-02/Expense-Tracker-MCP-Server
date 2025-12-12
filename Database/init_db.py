@@ -11,6 +11,7 @@ def init_database():
     cur.close()
     conn.close()
     print("✅ Database schema initialized!")
+    return
 
 if __name__ == "__main__":
     init_database()

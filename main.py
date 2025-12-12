@@ -11,49 +11,86 @@ mcp = FastMCP(name="Expense Tracker MCP Server")
 # tool 1 -> add an expense to the database
 @mcp.tool
 def add_Expense(
-    expense_amount:float, 
-    expense_description:str, 
-    expense_date:Optional[str]
-    ):
-    """This tool will add expense to the database directly and return message
-    Args: expense amount, expense description, expense date(optional)
+    amount: float,
+    category: str,
+    tags: str,
+    payment_method: str,
+    status: str,
+    frequency: Optional[str] = None,
+    expense_date: Optional[str] = None,
+    notes: Optional[str] = None
+):
+    """Add a new expense to the database.
+    
+    Creates a new expense record with required and optional fields. Generates a unique
+    expense ID and automatically sets creation timestamp.
+    
+    Args:
+        amount (float): Expense amount in currency (required)
+        category (str): Expense category/type (required)
+        tags (str): Tags for expense classification (required)
+        payment_method (str): Payment method used (required)
+        status (str): Expense status (required)
+        frequency (str, optional): Recurrence frequency (daily, weekly, monthly, none)
+        expense_date (str, optional): Date in YYYY-MM-DD format. Defaults to current date
+        notes (str, optional): Additional notes or description
+    
+    Returns:
+        dict: {"result": {"status": "success", "message": "Expense added successfully"}}
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
     
     try:
         expense_id = str(uuid.uuid4())
+        
+        # Build dynamic query
+        params = ['expense_id', 'amount', 'category', 'tags', 'payment_method', 'status']
+        vals = [expense_id, amount, category, tags, payment_method, status]
+        
+        if frequency:
+            params.append('frequency')
+            vals.append(frequency)
+        
         if expense_date:
-            db_cursor.execute(
-                """INSERT INTO expenses(expense_id, 
-                                    amount, 
-                                    category, 
-                                    expense_date) 
-                VALUES (%s, %s, %s, %s)""",
-                (expense_id, expense_amount, expense_description, expense_date)
-            )
-            db_connection.commit()
-            return {"result":{"status": "success", "message":"Expense added successfully"}}
-        else:
-            db_cursor.execute(
-                """INSERT INTO expenses(expense_id, 
-                                    amount, 
-                                    category) 
-                VALUES (%s, %s, %s)""",
-                (expense_id, expense_amount, expense_description)
-            )
-            db_connection.commit()
-            return {"result":{"status": "success", "message":"Expense added successfully"}}
+            params.append('expense_date')
+            vals.append(expense_date)
+        
+        if notes:
+            params.append('notes')
+            vals.append(notes)
+        
+        # Create dynamic query with correct number of placeholders
+        placeholders = ', '.join(['%s'] * len(vals))
+        query = f"INSERT INTO expenses({', '.join(params)}) VALUES ({placeholders})"
+        
+        db_cursor.execute(query, vals)
+        db_connection.commit()
+        
+        return {
+            "result": {
+                "status": "success",
+                "message": "Expense added successfully"
+            }
+        }
+        
     except Exception as e:
         return {"result":{"status": "error", "message": str(e)}}
     finally:
         db_cursor.close()
         db_connection.close()
 
-# tool 2
+# tool 2 -> get all expenses from db
 @mcp.tool
 def get_all_expenses():
-    """This tool will get all expenses from the database directly 
+    """Retrieve all expenses from the database.
+    
+    Fetches all expense records sorted by date in descending order (newest first).
+    Returns complete details for each expense including amount, category, date,
+    tags, notes, payment method, status, and frequency.
+    
+    Returns:
+        dict: Expenses list with status and message
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
@@ -69,7 +106,12 @@ def get_all_expenses():
                 "Expense Id": row[0],
                 "Amount": row[1],
                 "Category": row[2],
-                "Date": row[3]
+                "Date": row[3],
+                "Tags": row[6],
+                "Notes": row[7],
+                "Payment Method": row[8],
+                "Status": row[9],
+                "Frequency": row[10]
             }
             expenses.append(expense)
         return {"result":{
@@ -84,16 +126,37 @@ def get_all_expenses():
         db_cursor.close()
         db_connection.close()
 
-# tool 3 
+# tool 3 -> update a single expense
 @mcp.tool
 def updateExpense(
-    expense_id: str,
-    expense_amount: Optional[float] = None, 
-    expense_description: Optional[str] = None, 
-    expense_date: Optional[str] = None
+    expense_id:str,
+    amount: Optional[float]=None,
+    category: Optional[str]=None,
+    tags: Optional[str]=None,
+    payment_method: Optional[str] = None,
+    status: Optional[str] = None,
+    frequency: Optional[str] = None,
+    expense_date: Optional[str] = None,
+    notes: Optional[str] = None
 ):
-    """Update an expense in the database. Only provide fields you want to update
-    Args: expense_id (required), and any optional fields to update
+    """Update an existing expense record.
+    
+    Allows partial updates - only provide fields you want to modify. Automatically
+    updates the 'updated_at' timestamp. All other fields remain unchanged.
+    
+    Args:
+        expense_id (str): UUID of the expense to update (required)
+        amount (float, optional): Updated expense amount
+        category (str, optional): Updated category
+        tags (str, optional): Updated tags
+        payment_method (str, optional): Updated payment method
+        status (str, optional): Updated status
+        frequency (str, optional): Updated recurrence frequency
+        expense_date (str, optional): Updated date in YYYY-MM-DD format
+        notes (str, optional): Updated notes/description
+    
+    Returns:
+        dict: Success or error message with status
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
@@ -103,18 +166,38 @@ def updateExpense(
         updates = []
         params = []
         
-        if expense_amount is not None:
+        if amount is not None: # amount
             updates.append("amount = %s")
-            params.append(expense_amount)
+            params.append(amount)
         
-        if expense_description is not None:
+        if category is not None: # category
             updates.append("category = %s")
-            params.append(expense_description)
+            params.append(category)
         
-        if expense_date is not None:
+        if expense_date is not None: # date
             updates.append("expense_date = %s")
             params.append(expense_date)
+            
+        if tags is not None: # tags
+            updates.append("tags = %s")
+            params.append(tags)
         
+        if payment_method is not None: # payment method
+            updates.append("payment_method = %s")
+            params.append(payment_method)
+        
+        if status is not None: # status
+            updates.append("status = %s")
+            params.append(status)
+            
+        if frequency is not None: # frequency
+            updates.append('frequency')
+            params.append(frequency)
+        
+        if notes is not None: # notes
+            updates.append('notes')
+            params.append(notes)
+            
         if not updates:
             return {"result": {"status": "error", "message": "No fields to update"}}
         
@@ -139,16 +222,21 @@ def updateExpense(
         db_cursor.close()
         db_connection.close()
 
-# tool 4
+# tool 4 -> get date wise expense
 @mcp.tool
 def get_selected_expenses(start_date:str, end_date:str):
-    """
-    Docstring for get_selected_expenses
+    """Get all expenses within a specified date range.
     
-    :param start_date: starting day
-    :param end_date: ending day
+    Retrieves expenses between start_date and end_date (inclusive). Useful for
+    viewing expenses for specific time periods. Results are sorted by date in
+    descending order.
     
-    Returns the expenses from these days
+    Args:
+        start_date (str): Start date in YYYY-MM-DD format (required)
+        end_date (str): End date in YYYY-MM-DD format (required)
+    
+    Returns:
+        dict: Expenses list in date range with status and message
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
@@ -165,7 +253,12 @@ def get_selected_expenses(start_date:str, end_date:str):
                 "Expense Id": row[0],
                 "Amount": row[1],
                 "Category": row[2],
-                "Date": row[3]
+                "Date": row[3],
+                "Tags": row[6],
+                "Notes": row[7],
+                "Payment Method": row[8],
+                "Status": row[9],
+                "Frequency": row[10]
             }
             expenses.append(expense)
         if expenses:
@@ -187,115 +280,144 @@ def get_selected_expenses(start_date:str, end_date:str):
         db_cursor.close()
         db_connection.close()
        
-# tool 5
+# tool 5 -> get expense summary
 @mcp.tool
-def get_summary(start_date:Optional[str] = None, end_date:Optional[str] = None, category:Optional[str] = None):
-    """
-    Docstring for get_summary
+def get_summary(
+    category: Optional[str] = None,
+    tags: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    status: Optional[str] = None,
+    frequency: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Get detailed expense summary with advanced analytics.
     
-    :param start_date: Starting date
-    :type start_date: Optional[str]
-    :param end_date: Ending date
-    :type end_date: Optional[str]
+    Provides comprehensive expense analysis with multiple filter options. Returns
+    individual expenses plus summary statistics including total, count, average,
+    and breakdown by category. Works with any combination of filters.
+    
+    Args:
+        category (str, optional): Filter by expense category
+        tags (str, optional): Filter by tags
+        payment_method (str, optional): Filter by payment method
+        status (str, optional): Filter by status
+        frequency (str, optional): Filter by recurrence frequency
+        start_date (str, optional): Start date in YYYY-MM-DD format
+        end_date (str, optional): End date in YYYY-MM-DD format
+    
+    Returns:
+        dict: Expenses list with summary statistics (total, count, average, category breakdown)
     """
     
     db_connection = get_db()
     db_cursor = db_connection.cursor()
     
     try:
-        # based on dates 
-        if start_date and end_date and not category:
-            params = [start_date, end_date]
-            query = f"SELECT * FROM expenses WHERE expense_date BETWEEN %s AND %s GROUP BY category ORDER BY category"
-            db_cursor.execute(query, params)
-            db_expenses = db_cursor.fetchall()
-            expenses = []
-            for row in db_expenses:
-                expense = {
-                    "Expense Id": row[0],
-                    "Amount": row[1],
-                    "Category": row[2],
-                    "Date": row[3]
+        # Build WHERE clause dynamically
+        where_conditions = []
+        params = []
+        
+        if start_date and end_date:
+            where_conditions.append("expense_date BETWEEN %s AND %s")
+            params.extend([start_date, end_date])
+        
+        if category:
+            where_conditions.append("category = %s")
+            params.append(category.lower())
+        
+        if tags:
+            where_conditions.append("tags = %s")
+            params.append(tags)
+        
+        if payment_method:
+            where_conditions.append("payment_method = %s")
+            params.append(payment_method)
+        
+        if status:
+            where_conditions.append("status = %s")
+            params.append(status)
+        
+        if frequency:
+            where_conditions.append("frequency = %s")
+            params.append(frequency)
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+        
+        # Get all matching expenses
+        query = f"SELECT * FROM expenses WHERE {where_clause} ORDER BY expense_date DESC"
+        db_cursor.execute(query, params)
+        db_expenses = db_cursor.fetchall()
+        
+        if not db_expenses:
+            return {"result": {
+                "status": "success",
+                "message": "No expenses match the given criteria",
+                "summary": {
+                    "total_amount": 0,
+                    "count": 0,
+                    "average": 0
                 }
-                expenses.append(expense)
-            if expenses:
-                return {"result":{
-                    "status": "success", 
-                    "expenses":expenses,
-                    "message": "Expenses tracked on each category"
-                }}
-            else:
-                return {"result":{
-                    "status": "success", 
-                    "message": "No expense in given dates"
-                }}
-                
-        # based on only category
-        elif category and not start_date and not end_date:
-            query = f"SELECT * FROM expenses WHERE category = %s"
-            db_cursor.execute(query, [category.lower()])
-            db_expenses = db_cursor.fetchall()
-            expenses = []
-            for row in db_expenses:
-                expense = {
-                    "Expense Id": row[0],
-                    "Amount": row[1],
-                    "Category": row[2],
-                    "Date": row[3]
-                }
-                expenses.append(expense)
-            if expenses:
-                return {"result":{
-                    "status": "success", 
-                    "expenses":expenses,
-                    "message": "Expenses tracked on given category"
-                }}
-            else:
-                return {"result":{
-                    "status": "success", 
-                    "message": "No expense in given category"
-                }}
-        # all the parameters exist:
-        elif start_date and end_date and category:
-            params = [start_date, end_date, category.lower()]
-            query = f"SELECT * FROM expenses WHERE expense_date BETWEEN %s AND %s AND category=%s"
-            db_cursor.execute(query, params)
-            db_expenses = db_cursor.fetchall()
-            expenses = []
-            for row in db_expenses:
-                expense = {
-                    "Expense Id": row[0],
-                    "Amount": row[1],
-                    "Category": row[2],
-                    "Date": row[3]
-                }
-                expenses.append(expense)
-            if expenses:
-                return {"result":{
-                    "status": "success", 
-                    "expenses":expenses,
-                    "message": "Expenses tracked on each category on given dates"
-                }}
-            else:
-                return {"result":{
-                    "status": "success", 
-                    "message": "No expense in given dates or category"
-                }}
-    except Exception as e:
-        return {"result":{"status": "error", "message": str(e)}}
-    
+            }}
+        
+        # Process expenses and calculate analytics
+        expenses = []
+        total_amount = 0
+        category_totals = {}
+        
+        for row in db_expenses:
+            expense = {
+                "Expense Id": row[0],
+                "Amount": float(row[1]),
+                "Category": row[2],
+                "Date": row[3],
+                "Created": row[4],
+                "Updated": row[5],
+                "Tags": row[6],
+                "Notes": row[7],
+                "Payment Method": row[8],
+                "Status": row[9],
+                "Frequency": row[10]
+            }
+            expenses.append(expense)
+            total_amount += expense["Amount"]
+            
+            # Calculate category totals
+            cat = expense["Category"]
+            category_totals[cat] = category_totals.get(cat, 0) + expense["Amount"]
+        
+        # Calculate statistics
+        count = len(expenses)
+        average = round(total_amount / count, 2) if count > 0 else 0
+        
+        return {"result": {
+            "status": "success",
+            "expenses": expenses,
+            "summary": {
+                "total_amount": round(total_amount, 2),
+                "count": count,
+                "average": average,
+                "category_breakdown": {cat: round(amt, 2) for cat, amt in category_totals.items()}
+            },
+            "message": f"Found {count} expenses with total amount {total_amount:.2f}Rs"
+        }}
     finally:
         db_cursor.close()
         db_connection.close()
 
-# tool 6
+# tool 6 -> delete an expense
 @mcp.tool
 def delete_expense(expense_id:str):
-    """
-    Docstring for delete_expense
+    """Delete an expense from the database.
     
-    :param expense_id: the selected expense will be deleted
-    :type expense_id: str
+    Permanently removes an expense record. Requires valid expense UUID.
+    This operation cannot be undone.
+    
+    Args:
+        expense_id (str): UUID of the expense to delete (required)
+    
+    Returns:
+        dict: Status and message confirming deletion or error
     """
     
     db_connection = get_db()
@@ -322,18 +444,21 @@ def delete_expense(expense_id:str):
         db_cursor.close()
         db_connection.close()
 
-# tool 7
+# tool 7 -> get total expense
 @mcp.tool
 def get_total_expense(start_date:Optional[str]=None, end_date:Optional[str]=None, category:Optional[str] = None):
-    """
-    Docstring for get_total_expense
+    """Calculate total expense amount with optional filters.
     
-    :param start_date: From this date
-    :type start_date: Optional[str]
-    :param end_date: Upto this date
-    :type end_date: Optional[str]
-    :param category: On this purpose
-    :type categry: Optional[str]
+    Sums up all expense amounts based on provided filters. Useful for understanding
+    total spending in a date range or by category.
+    
+    Args:
+        start_date (str, optional): Start date in YYYY-MM-DD format
+        end_date (str, optional): End date in YYYY-MM-DD format
+        category (str, optional): Filter by specific category
+    
+    Returns:
+        dict: Total amount with status and message
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
@@ -385,11 +510,64 @@ def get_total_expense(start_date:Optional[str]=None, end_date:Optional[str]=None
         db_cursor.close()
         db_connection.close()
 
+# tool 8 -> get top category expenses
+@mcp.tool
+def get_top_expense_categories():
+    """Get the top 5 expenses by amount.
+    
+    Retrieves the 5 highest individual expenses from the database, sorted by
+    amount in descending order. Useful for identifying major expense items.
+    
+    Returns:
+        dict: List of top 5 expenses with details
+    """
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    
+    try:
+        categories = []
+        db_cursor.execute(
+                """SELECT * FROM expenses ORDER BY amount DESC;"""
+            )
+        db_expenses = db_cursor.fetchmany(5)
+        for row in db_expenses:
+            cats = {
+                "Category": row[2],
+                "Amount": row[1],
+                "Date": row[3],
+                "Tags": row[6],
+                "Notes": row[7],
+                "Payment Method": row[8],
+            }
+            categories.append(cats)
+        return {"result":{
+            "status": "success", 
+            "expenses":categories,
+            "message": "Top 5 expenses tracked"
+        }}
+    
+    except Exception as e:
+        return {"result":{"status": "error", "message": str(e)}}
+    finally:
+        db_cursor.close()
+        db_connection.close()
+
+# tool 9 -> get monthly report
+
 
 # resource 1
 CATEGORIES_PATH = Path(__file__).parent / 'Resources' / 'categories.json'
 @mcp.resource("expense://categories", mime_type="application/json")
 def categories():
+    """Get available expense categories from configuration file.
+    
+    Loads and returns the predefined list of expense categories from the
+    categories.json resource file. Used for validating and standardizing
+    expense categorization across the application.
+    
+    Returns:
+        list/dict: Available expense categories in JSON format
+    """
     with open(CATEGORIES_PATH, 'r') as f:
-        categories = json.load(f)
-        return categories
+        categories_data = json.load(f)
+        return categories_data

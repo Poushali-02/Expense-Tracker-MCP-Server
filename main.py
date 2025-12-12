@@ -4,6 +4,7 @@ from typing import Optional
 import uuid
 from pathlib import Path
 import json
+from datetime import timedelta, datetime
 
 # Create a server instance
 mcp = FastMCP(name="Expense Tracker MCP Server")
@@ -224,7 +225,10 @@ def updateExpense(
 
 # tool 4 -> get date wise expense
 @mcp.tool
-def get_selected_expenses(start_date:str, end_date:str):
+def get_selected_expenses(
+    start_date:str, 
+    end_date:str
+    ):
     """Get all expenses within a specified date range.
     
     Retrieves expenses between start_date and end_date (inclusive). Useful for
@@ -407,7 +411,9 @@ def get_summary(
 
 # tool 6 -> delete an expense
 @mcp.tool
-def delete_expense(expense_id:str):
+def delete_expense(
+    expense_id:str
+    ):
     """Delete an expense from the database.
     
     Permanently removes an expense record. Requires valid expense UUID.
@@ -446,7 +452,11 @@ def delete_expense(expense_id:str):
 
 # tool 7 -> get total expense
 @mcp.tool
-def get_total_expense(start_date:Optional[str]=None, end_date:Optional[str]=None, category:Optional[str] = None):
+def get_total_expense(
+    start_date:Optional[str]=None, 
+    end_date:Optional[str]=None, 
+    category:Optional[str] = None
+    ):
     """Calculate total expense amount with optional filters.
     
     Sums up all expense amounts based on provided filters. Useful for understanding
@@ -553,8 +563,101 @@ def get_top_expense_categories():
         db_connection.close()
 
 # tool 9 -> get monthly report
-
-
+@mcp.tool
+def monthly_report(year: int, month: int):
+    """Get monthly expense report with analytics.
+    
+    Retrieves all expenses for a specific month and provides detailed analysis
+    including total amount, count, average, and category breakdown.
+    
+    Args:
+        year (int): Year in YYYY format (e.g., 2025)
+        month (int): Month as number 1-12 (e.g., 12 for December)
+    
+    Returns:
+        dict: Expenses list with summary statistics including total, count, average,
+              and category breakdown for the specified month
+    
+    Example:
+        monthly_report(year=2025, month=12)
+        # Returns all December 2025 expenses with analytics
+    """
+    from datetime import datetime, timedelta
+    
+    try:
+        # Calculate first and last day of month
+        first_day = datetime(year, month, 1)
+        if month == 12:
+            last_day = datetime(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            last_day = datetime(year, month + 1, 1) - timedelta(days=1)
+        
+        start_date = first_day.strftime('%Y-%m-%d')
+        end_date = last_day.strftime('%Y-%m-%d')
+        month_name = first_day.strftime('%B')
+        
+        db_connection = get_db()
+        db_cursor = db_connection.cursor()
+        
+        query = "SELECT * FROM expenses WHERE expense_date >= %s AND expense_date <= %s ORDER BY expense_date DESC"
+        params = [start_date, end_date]
+        
+        db_cursor.execute(query, params)
+        db_expenses = db_cursor.fetchall()
+        
+        if not db_expenses:
+            return {"result": {
+                "status": "success",
+                "month": month_name,
+                "year": year,
+                "message": f"No expenses found for {month_name} {year}",
+                "summary": {
+                    "total_amount": 0,
+                    "count": 0,
+                    "average": 0
+                }
+            }}
+        
+        # Process expenses and calculate analytics
+        expenses = []
+        total_amount = 0
+        category_totals = {}
+        
+        for row in db_expenses:
+            expense = {
+                "Expense Id": row[0],
+                "Amount": float(row[1]),
+                "Category": row[2],
+                "Date": row[3],
+                "Tags": row[6],
+                "Notes": row[7],
+                "Payment Method": row[8],
+                "Status": row[9],
+                "Frequency": row[10]
+            }
+            expenses.append(expense)
+            total_amount += expense["Amount"]
+        
+        return {"result": {
+            "status": "success",
+            "month": month_name,
+            "year": year,
+            "summary": {
+                "total_amount": round(total_amount, 2),
+                "Expenses":expenses,
+            },
+            "message": f"Monthly report for {month_name} {year}: expenses totaling Rs {total_amount:.2f}"
+        }}
+    
+    except Exception as e:
+        return {"result": {
+            "status": "error",
+            "message": str(e)
+        }}
+    finally:
+        db_cursor.close()
+        db_connection.close()
+        
 # resource 1
 CATEGORIES_PATH = Path(__file__).parent / 'Resources' / 'categories.json'
 @mcp.resource("expense://categories", mime_type="application/json")

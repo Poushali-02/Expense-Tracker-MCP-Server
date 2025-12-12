@@ -4,22 +4,282 @@ from typing import Optional
 from pathlib import Path
 import json
 from Utilities import utilities
+from Utilities.auth import AuthManager
+from Utilities.middleware import require_auth
+import uuid
 
 # Create a server instance
 mcp = FastMCP(name="Expense Tracker MCP Server")
 
-# tool 1 -> add a transactions to the database
+""" ----- Authentication Tools ----- """ 
+# Tool 1: Register user
+@mcp.tool
+def register_user(
+    username:str,
+    email:str,
+    password:str,
+    full_name:str
+):
+
+    """Register a new user account.
+        
+        Creates a new user with username, email, and password. Password is hashed
+        for security. Returns JWT token on successful registration.
+        
+        Args:
+            username (str): Unique username (required)
+            email (str): Valid email address (required)
+            password (str): Password with minimum 8 chars, uppercase, lowercase, digit (required)
+        
+        Returns:
+            dict: User ID, token, and success status
+    """
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    
+    try:
+        isValid, message = AuthManager.validate_password_strength(password)
+        if not isValid:
+            return {
+                "result": {
+                    "status": "error",
+                    "message": f"{message}"
+                }
+            }
+            
+        # username unique?
+        USERNAME_QUERY="SELECT user_id FROM users WHERE username = %s"
+        db_cursor.execute(USERNAME_QUERY, [username])
+        if db_cursor.fetchone():
+            return {
+                "result": {
+                    "status": "error",
+                    "message": "username already exists"
+                }
+            }
+            
+        # email exists?
+        EMAIL_QUERY="SELECT user_id FROM users WHERE email = %s"
+        db_cursor.execute(EMAIL_QUERY, [email])
+        if db_cursor.fetchone():
+            return {
+                "result": {
+                    "status": "error",
+                    "message": "email already exists"
+                }
+            }
+            
+        # user id creation
+        user_id = str(uuid.uuid4())
+        
+        # hash password
+        password_hash = AuthManager.hash_password(password)
+        EXECUTE_QUERY="""
+            INSERT INTO users(user_id, username, full_name, email, password_hash)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        PARAMS=[user_id, username, full_name, email, password_hash]
+        db_cursor.execute(EXECUTE_QUERY, PARAMS)
+        db_connection.commit()
+        
+        token = AuthManager.create_token(user_id, username)
+        return {"result": {
+            "status": "success",
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+            "message": "User registered successfully"
+        }}
+    
+    except Exception as e:
+        db_connection.rollback()
+        return {"result": {"status": "error", "message": str(e)}}
+    
+    finally:
+        db_cursor.close()
+        db_connection.close()
+
+# Tool 2: Login user
+@mcp.tool
+def login_user(
+    username:str,
+    password:str
+):
+    """Authenticate user and get JWT token.
+    
+    Verifies username and password. Returns JWT token on successful login.
+    Token is valid for 24 hours.
+    
+    Args:
+        username (str): Username (required)
+        password (str): Password (required)
+    
+    Returns:
+        dict: User ID, token, and success status"""
+        
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    QUERY="SELECT user_id, password_hash FROM users WHERE username=%s AND active=TRUE"
+
+    try:
+        db_cursor.execute(QUERY, [username])
+        result = db_cursor.fetchone()
+        if not result:
+            return {
+                "result":{
+                    "status": "error",
+                    "message": "Invalid username or password"
+                }
+            }
+        user_id, password_hash = result
+        # Verify password
+        if not AuthManager.verify_password(password, password_hash):
+            return {"result": {"status": "error", "message": "Invalid username or password"}}
+        
+        token = AuthManager.create_token(user_id, username)
+        return {"result": {
+            "status": "success",
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+            "message": "Login successful"
+        }}
+    except Exception as e:
+        return {
+                "result":{
+                    "status": "error",
+                    "message": f"{e}"
+                }
+            }
+    finally:
+        db_cursor.close()
+        db_connection.close()
+
+# Tool 3: Verify token
+@mcp.tool
+def verify_token(
+    token:str
+):
+    """Verify JWT token validity.
+    
+    Checks if token is valid and not expired.
+    
+    Args:
+        token (str): JWT token to verify (required)
+    
+    Returns:
+        dict: Token validity and user info
+    """
+    try:
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result":{
+                    "status": "error",
+                    "message": "Invalid or expired token"
+                }
+            }
+        return {"result": {
+            "status": "success",
+            "user_id": payload['user_id'],
+            "username": payload['username'],
+            "message": "Token is valid"
+        }}
+    
+    except Exception as e:
+        return {"result": {"status": "error", "message": str(e)}}
+
+# Tool 4: Change password
+@mcp.tool
+def change_password(
+    user_id:str,
+    old_password:str,
+    new_password:str
+):
+    """Change user password.
+    
+    Updates password after verifying old password. Requires valid user_id.
+    
+    Args:
+        user_id (str): User ID (required)
+        old_password (str): Current password (required)
+        new_password (str): New password meeting security requirements (required)
+    
+    Returns:
+        dict: Success or error status"""
+        
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    
+    try:
+        isValid, message = AuthManager.validate_password_strength(new_password)
+        if not isValid:
+            return {
+                "result":{
+                    "status": "error",
+                    "message": f"{message}"
+                }
+            }
+        
+        # get ser
+        CHECK_QUERY="SELECT password_hash FROM users WHERE user_id = %s"
+        db_cursor.execute(CHECK_QUERY, [user_id])
+        user = db_cursor.fetchone()
+        if not user:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "User not found"
+                }
+            }
+        
+        password_hash = user[0]
+        
+        # verify passsword
+        if not AuthManager.verify_password(old_password, password_hash):
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Wrong password"
+                }
+            }
+        
+        new_hash = AuthManager.hash_password(new_password)
+        
+        ADD_QUERY="UPDATE users SET password_hash=%s, updated_at=CURRENT_TIMESTAMP WHERE user_id=%s"
+        db_cursor.execute(ADD_QUERY, [new_hash, user_id])     
+        db_connection.commit()
+        return {
+            "result": {
+                "status": "success",
+                "message": "Password changed successfully"
+            }
+        }
+           
+    except Exception as e:
+        db_connection.rollback()
+        return {"result": {"status": "error", "message": str(e)}}
+    finally:
+        db_cursor.close()
+        db_connection.close()
+        
+        
+""" ----- Transaction Tools -----"""
+# Tool 1: add a transactions to the database
 @mcp.tool
 def addTransaction(
+    token: str,
     amount: float,
     category: str,
     tags: str,
     payment_method: str,
     status: str,
-    transaction_type:str,
+    transaction_type: str,
+    *,
     frequency: Optional[str] = None,
     transaction_date: Optional[str] = None,
-    notes: Optional[str] = None
+    notes: Optional[str] = None,
+    user_id: Optional[str] = None
 ):
     """Add a new expense (debit) to the database.
     
@@ -27,6 +287,7 @@ def addTransaction(
     transaction ID and automatically sets creation timestamp.
     
     Args:
+        token (str): Valid JWT token (required)
         amount (float): Expense amount in currency (required)
         category (str): Expense category/type (required)
         tags (str): Tags for expense classification (required)
@@ -43,15 +304,37 @@ def addTransaction(
     db_cursor = db_connection.cursor()
     
     try:
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         # Normalize inputs
         category = utilities.normalize_category(category)
         
         # Validate inputs
         if not utilities.validate_status(status):
-            return {"result": {"status": "error", "message": "Invalid status. Use: pending, completed, cancelled"}}
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid status. Use: pending, completed, cancelled"
+                }
+            }
         
         if not utilities.validate_frequency(frequency):
-            return {"result": {"status": "error", "message": "Invalid frequency. Use: none, daily, weekly, monthly, yearly"}}
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid frequency. Use: none, daily, weekly, monthly, yearly"
+                    
+                }
+            }
         
         # Build dynamic query
         params = ['amount', 'transaction_type', 'category', 'tags', 'payment_method', 'status']
@@ -69,9 +352,11 @@ def addTransaction(
             params.append('notes')
             vals.append(notes.lower())
         
-        # Create dynamic query with correct number of placeholders
+        params.insert(0, 'user_id')
+        vals.insert(0, user_id)
+
         placeholders = ', '.join(['%s'] * len(vals))
-        query = f"INSERT INTO expenses({', '.join(params)}) VALUES ({placeholders})"
+        query = f"INSERT INTO transactions({', '.join(params)}) VALUES ({placeholders})"
         
         db_cursor.execute(query, vals)
         db_connection.commit()
@@ -89,10 +374,13 @@ def addTransaction(
         db_cursor.close()
         db_connection.close()
 
-# tool 2 -> get all transactions from db
+# Tool 2: get all transactions from db
 @mcp.tool
-def get_all_transactions():
-    """Retrieve all transactions from the database.
+def get_all_transactions(
+    token: str,
+    user_id: Optional[str] = None
+):
+    """Retrieve all transactions for authenticated user from the database.
     
     Fetches all transaction records sorted by date in descending order (newest first).
     Returns complete details for each transactions including amount, category, date,
@@ -105,25 +393,37 @@ def get_all_transactions():
     db_cursor = db_connection.cursor()
     
     try:
+        
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         transactions = []
         db_cursor.execute(
-                """SELECT * FROM expenses ORDER BY transaction_date DESC;"""
+                """SELECT * FROM transactions WHERE user_id=%s ORDER BY transaction_date DESC;""", [user_id]
             )
         db_transactions = db_cursor.fetchall()
         for row in db_transactions:
             transaction = {
-                "Id": str(row[0]),
-                "Type": row[1],
-                "Date": str(row[2]),
-                "Amount": float(row[3]) if row[3] else 0,
-                "Category": row[4],
-                "Tags": row[5],
-                "Notes": row[6],
-                "Payment Method": row[7],
-                "Status": row[8],
-                "Frequency": row[9],
-                "Created": str(row[10]),
-                "Updated": str(row[11])
+                "Id": str(row[1]),  # transaction_id
+                "Type": row[2],     # transaction_type
+                "Date": str(row[3]), # transaction_date
+                "Amount": float(row[4]) if row[4] else 0, # amount
+                "Category": str(row[5]), # category
+                "Tags": row[6],     # tags
+                "Notes": row[7],     # notes
+                "Payment Method": row[8], # payment_method
+                "Status": row[9],    # status
+                "Frequency": row[10], # frequency
+                "Created": str(row[11]), # created_at
+                "Updated": str(row[12])  # updated_at
             }
             transactions.append(transaction)
         return {"result":{
@@ -138,12 +438,14 @@ def get_all_transactions():
         db_cursor.close()
         db_connection.close()
 
-# tool 3 -> get date wise transactions
+# Tool 3: get date wise transactions
 @mcp.tool
 def get_selected_transactions(
-    start_date:str, 
-    end_date:str
-    ):
+    token: str,
+    start_date: str, 
+    end_date: str,
+    user_id: Optional[str] = None
+):
     """Get all transactions within a specified date range.
     
     Retrieves transactions between start_date and end_date (inclusive). Useful for
@@ -161,26 +463,38 @@ def get_selected_transactions(
     db_cursor = db_connection.cursor()
     
     try:
+        
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         # Build and execute SELECT query
-        query = f"SELECT * FROM expenses WHERE transaction_date BETWEEN %s AND %s ORDER BY transaction_date DESC;"
+        query = f"SELECT * FROM transactions WHERE transaction_date BETWEEN %s AND %s AND user_id=%s ORDER BY transaction_date DESC;"
         transactions = []
-        date_params = [start_date, end_date]
-        db_cursor.execute(query, date_params)
+        params = [start_date, end_date, user_id]
+        db_cursor.execute(query, params)
         db_transactions = db_cursor.fetchall()
         for row in db_transactions:
             transaction = {
-                "Id": str(row[0]),
-                "Type": row[1],
-                "Date": str(row[2]),
-                "Amount": float(row[3]) if row[3] else 0,
-                "Category": row[4],
-                "Tags": row[5],
-                "Notes": row[6],
-                "Payment Method": row[7],
-                "Status": row[8],
-                "Frequency": row[9],
-                "Created": str(row[10]),
-                "Updated": str(row[11])
+                "Id": str(row[1]),  # transaction_id
+                "Type": row[2],     # transaction_type
+                "Date": str(row[3]), # transaction_date
+                "Amount": float(row[4]) if row[4] else 0, # amount
+                "Category": str(row[5]), # category
+                "Tags": row[6],     # tags
+                "Notes": row[7],     # notes
+                "Payment Method": row[8], # payment_method
+                "Status": row[9],    # status
+                "Frequency": row[10], # frequency
+                "Created": str(row[11]), # created_at
+                "Updated": str(row[12])  # updated_at
             }
             transactions.append(transaction)
         if transactions:
@@ -202,13 +516,15 @@ def get_selected_transactions(
         db_cursor.close()
         db_connection.close()
        
-# tool 4 -> get total expense
+# Tool 4: get total expense
 @mcp.tool
 def get_total_transactions(
-    start_date:Optional[str]=None, 
-    end_date:Optional[str]=None, 
-    category:Optional[str] = None
-    ):
+    token: str,
+    start_date: Optional[str] = None, 
+    end_date: Optional[str] = None, 
+    category: Optional[str] = None,
+    user_id: Optional[str] = None
+):
     """Calculate total transactions amount with optional filters.
     
     Sums up all transactions amounts based on provided filters. Useful for understanding
@@ -226,14 +542,25 @@ def get_total_transactions(
     db_cursor = db_connection.cursor()
     
     try:
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         checks = []
         params = []
         if start_date is not None: 
-            checks.append(f"transaction_date >= %s")
+            checks.append("transaction_date >= %s")
             params.append(start_date)
             
         if end_date is not None:
-            checks.append(f"transaction_date <= %s")
+            checks.append("transaction_date <= %s")
             params.append(end_date)
             
         if category is not None:
@@ -243,24 +570,28 @@ def get_total_transactions(
         if not checks:
             return {"result": {"status": "error", "message": "No fields to add"}}
         
+        params.append(user_id)
+        
         # For Debit
         
-        DEBIT_QUERY=f"SELECT * FROM expenses WHERE {' AND '.join(checks)} AND transaction_type='expense' ORDER BY transaction_date DESC"
+        DEBIT_QUERY=f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='expense' AND user_id=%s ORDER BY transaction_date DESC"
         db_cursor.execute(DEBIT_QUERY, params)
         db_expenses = db_cursor.fetchall()
         expenses = 0
         for row in db_expenses:
-            expenses += row[3]
+            expenses += float(row[4]) if row[4] else 0
         
-        CREDIT_QUERY=f"SELECT * FROM expenses WHERE {' AND '.join(checks)} AND transaction_type='credit' ORDER BY transaction_date DESC"
+        # For credit
+        
+        CREDIT_QUERY=f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='credit' AND user_id=%s ORDER BY transaction_date DESC"
         db_cursor.execute(CREDIT_QUERY, params)
         db_credits = db_cursor.fetchall()
         credits = 0
         
         for row in db_credits:
-            credits += row[3]
+            credits += float(row[4]) if row[4] else 0
         
-        if expenses and credits:
+        if expenses or credits:
             return {"result":{
                 "status": "success", 
                 "expense":expenses,
@@ -269,10 +600,12 @@ def get_total_transactions(
                 "message": "Total transactions returned successfully"
             }}
         else:
-            return {"result":{
-                "status": "success", 
-                "message": "No expense to return"
-            }}
+            return {
+                "result":{
+                    "status": "success", 
+                    "message": "No transaction to return"
+                }
+            }
 
     except Exception as e:
         return {
@@ -285,58 +618,77 @@ def get_total_transactions(
         db_cursor.close()
         db_connection.close()
 
-# tool 5 -> get top category expenses
+# Tool 5: get top category transactions
 @mcp.tool
-def get_top_transaction_categories():
-    """Get the top 5 expenses by amount.
+def get_top_transaction_categories(
+    token: str,
+    user_id: Optional[str] = None
+):
+    """Get the top 5 transactions by amount.
     
-    Retrieves the 5 highest individual expenses (excluding credits) from the database,
+    Retrieves the 5 highest individual transactions (excluding credits) from the database,
     sorted by amount in descending order. Useful for identifying major expense items.
     
     Returns:
-        dict: List of top 5 expenses with details
+        dict: List of top 5 transactions with details
     """
     db_connection = get_db()
     db_cursor = db_connection.cursor()
     
     try:
+        
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         categories_credit = []
         categories_debit = []
         
         # Filter for expenses
-        DEBIT_QUERY = "SELECT * FROM expenses WHERE transaction_type='expense' ORDER BY amount DESC LIMIT 5"
-        db_cursor.execute(DEBIT_QUERY)
+        DEBIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='expense' AND user_id=%s ORDER BY amount DESC LIMIT 5"
+        db_cursor.execute(DEBIT_QUERY, [user_id])
         db_expenses = db_cursor.fetchall()
         
         for row in db_expenses:
-            if len(row) >= 9:
+            if len(row) >= 13:
                 expense = {
-                    "Id": str(row[0]),
-                    "Amount": float(row[1]) if row[1] else 0,
-                    "Category": str(row[3]) if len(row) > 3 else "Unknown",
-                    "Date": str(row[4]) if len(row) > 4 else "",
-                    "Tags": str(row[7]) if len(row) > 7 else "",
-                    "Notes": str(row[8]) if len(row) > 8 else "",
-                    "Payment Method": str(row[9]) if len(row) > 9 else ""
+                    "Id": str(row[1]),  # transaction_id
+                    "Type": row[2],     # transaction_type
+                    "Date": str(row[3]), # transaction_date
+                    "Amount": float(row[4]) if row[4] else 0, # amount
+                    "Category": row[5], # category
+                    "Tags": row[6],     # tags
+                    "Notes": row[7],     # notes
+                    "Payment Method": row[8], # payment_method
+                    "Status": row[9]    # status
                 }
                 categories_debit.append(expense)
         
         
         # Filter for credits
-        CREDIT_QUERY = "SELECT * FROM expenses WHERE transaction_type='credit' ORDER BY amount DESC LIMIT 5"
-        db_cursor.execute(CREDIT_QUERY)
+        CREDIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='credit' AND user_id=%s  ORDER BY amount DESC LIMIT 5"
+        db_cursor.execute(CREDIT_QUERY, [user_id])
         db_credits = db_cursor.fetchall()
         
         for row in db_credits:
-            if len(row) >= 9:
+            if len(row) >= 13:
                 credit = {
-                    "Id": str(row[0]),
-                    "Amount": float(row[1]) if row[1] else 0,
-                    "Category": str(row[3]) if len(row) > 3 else "Unknown",
-                    "Date": str(row[4]) if len(row) > 4 else "",
-                    "Tags": str(row[7]) if len(row) > 7 else "",
-                    "Notes": str(row[8]) if len(row) > 8 else "",
-                    "Payment Method": str(row[9]) if len(row) > 9 else ""
+                    "Id": str(row[1]),  # transaction_id
+                    "Type": row[2],     # transaction_type
+                    "Date": str(row[3]), # transaction_date
+                    "Amount": float(row[4]) if row[4] else 0, # amount
+                    "Category": row[5], # category
+                    "Tags": row[6],     # tags
+                    "Notes": row[7],     # notes
+                    "Payment Method": row[8], # payment_method
+                    "Status": row[9]    # status
                 }
                 categories_credit.append(credit)
         
@@ -354,9 +706,10 @@ def get_top_transaction_categories():
         db_cursor.close()
         db_connection.close()
 
-# tool 6 -> get summary of transactions
+# Tool 6: get summary of transactions
 @mcp.tool
 def get_summary(
+    token: str,
     transaction_type: Optional[str] = None,
     category: Optional[str] = None,
     tags: Optional[str] = None,
@@ -364,7 +717,8 @@ def get_summary(
     status: Optional[str] = None,
     frequency: Optional[str] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    end_date: Optional[str] = None,
+    user_id: Optional[str] = None
 ):
     """Get detailed summary with advanced analytics.
     
@@ -390,6 +744,18 @@ def get_summary(
     db_cursor = db_connection.cursor()
     
     try:
+        
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         # Build WHERE clause dynamically
         where_conditions = []
         params = []
@@ -422,10 +788,13 @@ def get_summary(
             where_conditions.append("transaction_type = %s")
             params.append(transaction_type)
         
+        where_conditions.append("user_id=%s")
+        params.append(user_id)
+        
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
         
         # Get all matching transactions
-        query = f"SELECT * FROM expenses WHERE {where_clause} ORDER BY transaction_date DESC"
+        query = f"SELECT * FROM transactions WHERE {where_clause} ORDER BY transaction_date DESC"
         db_cursor.execute(query, params)
         db_items = db_cursor.fetchall()
         
@@ -448,18 +817,18 @@ def get_summary(
         
         for row in db_items:
             transaction = {
-                "Id": str(row[0]),
-                "Type": row[1],
-                "Date": str(row[2]),
-                "Amount": float(row[3]) if row[3] else 0,
-                "Category": row[4],
-                "Tags": row[5],
-                "Notes": row[6],
-                "Payment Method": row[7],
-                "Status": row[8],
-                "Frequency": row[9],
-                "Created": str(row[10]),
-                "Updated": str(row[11])
+                "Id": str(row[1]),  # transaction_id
+                "Type": row[2],     # transaction_type
+                "Date": str(row[3]), # transaction_date
+                "Amount": float(row[4]) if row[4] else 0, # amount
+                "Category": str(row[5]), # category
+                "Tags": row[6],     # tags
+                "Notes": row[7],     # notes
+                "Payment Method": row[8], # payment_method
+                "Status": row[9],    # status
+                "Frequency": row[10], # frequency
+                "Created": str(row[11]), # created_at
+                "Updated": str(row[12])  # updated_at
             }
             transactions.append(transaction)
             total_amount += transaction["Amount"]
@@ -490,19 +859,21 @@ def get_summary(
         db_cursor.close()
         db_connection.close()
 
-# tool 7 -> update a single expense
+# Tool 7: update a single expense
 @mcp.tool
 def updateTransaction(
-    transaction_id:str,
-    amount: Optional[float]=None,
-    category: Optional[str]=None,
-    tags: Optional[str]=None,
+    token: str,
+    transaction_id: str,
+    amount: Optional[float] = None,
+    category: Optional[str] = None,
+    tags: Optional[str] = None,
     payment_method: Optional[str] = None,
     status: Optional[str] = None,
     frequency: Optional[str] = None,
     transaction_date: Optional[str] = None,
     notes: Optional[str] = None,
-    transaction_type:Optional[str]=None
+    transaction_type: Optional[str] = None,
+    user_id: Optional[str] = None
 ):
     """Update an existing expense record.
     
@@ -527,6 +898,17 @@ def updateTransaction(
     db_cursor = db_connection.cursor()
     
     try:
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         # Build dynamic UPDATE query
         updates = []
         params = []
@@ -572,9 +954,9 @@ def updateTransaction(
         
         # Add transaction_id as final parameter
         params.append(transaction_id)
-        
+        params.append(user_id)
         # Build and execute UPDATE query
-        query = f"UPDATE expenses SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = %s"
+        query = f"UPDATE transactions SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = %s AND user_id = %s"
         
         db_cursor.execute(query, params)
         db_connection.commit()
@@ -591,12 +973,14 @@ def updateTransaction(
         db_cursor.close()
         db_connection.close()
 
-# tool 8 -> get monthly report
+# Tool 8: get monthly report
 @mcp.tool
 def monthly_report(
+    token: str,
     year: int, 
-    month: int
-    ):
+    month: int,
+    user_id: Optional[str] = None
+):
     """Get monthly transaction report with analytics.
     
     Retrieves all transactions for a specific month and provides detailed analysis
@@ -617,6 +1001,17 @@ def monthly_report(
     from datetime import datetime, timedelta
     
     try:
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
         # Calculate first and last day of month
         first_day = datetime(year, month, 1)
         if month == 12:
@@ -632,16 +1027,18 @@ def monthly_report(
         db_cursor = db_connection.cursor()
         
         CREDIT_QUERY = """SELECT transaction_id, transaction_type, transaction_date, amount, category, tags, notes, payment_method, status, frequency, created_at, updated_at 
-                   FROM expenses WHERE transaction_date >= %s AND transaction_date <= %s 
+                   FROM transactions WHERE transaction_date >= %s AND transaction_date <= %s 
                    AND transaction_type='credit'
+                   AND user_id = %s
                    ORDER BY transaction_date DESC"""
                    
         DEBIT_QUERY = """SELECT transaction_id, transaction_type, transaction_date, amount, category, tags, notes, payment_method, status, frequency, created_at, updated_at 
-                   FROM expenses WHERE transaction_date >= %s AND transaction_date <= %s 
+                   FROM transactions WHERE transaction_date >= %s AND transaction_date <= %s 
                    AND transaction_type='expense'
+                   AND user_id = %s
                    ORDER BY transaction_date DESC"""
                    
-        params = [start_date, end_date]
+        params = [start_date, end_date, user_id]
         
         db_cursor.execute(CREDIT_QUERY, params)
         db_credits = db_cursor.fetchall()
@@ -771,9 +1168,12 @@ def monthly_report(
         db_cursor.close()
         db_connection.close()
         
-# tool 9 -> get balance
+# Tool 9: get balance
 @mcp.tool
-def balance():
+def balance(
+    token: str,
+    user_id: Optional[str] = None
+):
     """
     Get net balance (total credits - total expenses).
     
@@ -787,15 +1187,26 @@ def balance():
     db_cursor = db_connection.cursor()
     
     try:
-        QUERY=f"SELECT SUM(amount) FROM expenses WHERE transaction_type=%s AND status='completed'"
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
+        QUERY=f"SELECT SUM(amount) FROM transactions WHERE transaction_type=%s AND status='completed' AND user_id = %s"
         
         # for debit
-        db_cursor.execute(QUERY, ['expense'])
+        db_cursor.execute(QUERY, ['expense', user_id])
         expense_result = db_cursor.fetchone()[0]
         expense = float(expense_result) if expense_result else 0
         
         # for credit
-        db_cursor.execute(QUERY, ['credit'])
+        db_cursor.execute(QUERY, ['credit', user_id])
         credit_result = db_cursor.fetchone()[0]
         credit = float(credit_result) if credit_result else 0
         
@@ -818,11 +1229,13 @@ def balance():
             }
         }
 
-# tool 10 -> delete a transaction
+# Tool 10: delete a transaction
 @mcp.tool
 def delete_transaction(
-    transaction_id:str,
-    ):
+    token: str,
+    transaction_id: str,
+    user_id: Optional[str] = None
+):
     """Delete a transaction from the database.
     
     Permanently removes a transaction record. Requires valid transaction UUID.
@@ -839,8 +1252,19 @@ def delete_transaction(
     db_cursor = db_connection.cursor()
     
     try:
-        query = f"DELETE FROM expenses WHERE transaction_id=%s"
-        db_cursor.execute(query, [transaction_id])
+        # Authenticate user
+        payload = AuthManager.verify_token(token)
+        if not payload:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid or expired token"
+                }
+            }
+        user_id = payload['user_id']
+        
+        query = f"DELETE FROM transactions WHERE transaction_id=%s AND user_id = %s"
+        db_cursor.execute(query, [transaction_id, user_id])
         db_connection.commit()
         return {
             "result" : {
@@ -859,7 +1283,9 @@ def delete_transaction(
         db_cursor.close()
         db_connection.close()
 
-# resource 1
+
+""" ----- Resources -----"""
+# Resource 1: categories list
 CATEGORIES_PATH = Path(__file__).parent / 'Resources' / 'categories.json'
 @mcp.resource("expense://categories", mime_type="application/json")
 def categories():

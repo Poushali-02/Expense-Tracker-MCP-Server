@@ -1,0 +1,180 @@
+{
+  "food": [
+    "groceries",
+    "fruits_vegetables",
+    "dairy_bakery",
+    "dining_out",
+    "coffee_tea",
+    "snacks",
+    "delivery_fees",
+    "other"
+  ],
+  "electronics": [
+    "headphones_earphones",
+    "smartphones_mobile",
+    "laptops_computers",
+    "chargers_cables",
+    "cases_accessories",
+    "repairs_warranty",
+    "other"
+  ],
+  "transport": [
+    "rickshaw_auto",
+    "cab_ride_hailing",
+    "bus_metro_train",
+    "fuel_petrol_diesel",
+    "parking_tolls",
+    "vehicle_maintenance",
+    "other"
+  ],
+  "emi_loans": [
+    "mobile_emi",
+    "laptop_emi",
+    "home_appliance_emi",
+    "personal_loan_emi",
+    "credit_card_emi",
+    "processing_fees",
+    "late_payment_fee",
+    "other"
+  ],
+  "shopping": [
+    "clothing_apparel",
+    "footwear_shoes",
+    "groceries_household",
+    "books_stationery",
+    "home_decor",
+    "toys_gifts",
+    "other"
+  ],
+  "entertainment": [
+    "movies_theaters",
+    "streaming_ott",
+    "games_apps",
+    "outing_events",
+    "books_magazines",
+    "concerts_festivals",
+    "other"
+  ],
+  "housing": [
+    "rent_house_pg",
+    "security_deposit",
+    "maintenance_charges",
+    "brokerage_fee",
+    "repairs_renovation",
+    "furniture_appliances",
+    "other"
+  ],
+  "utilities": [
+    "electricity_bill",
+    "water_supply",
+    "internet_wifi",
+    "gas_cylinder",
+    "dth_cable_tv",
+    "mobile_recharge",
+    "other"
+  ],
+  "health": [
+    "medicines_pharmacy",
+    "doctor_consultation",
+    "diagnostics_labs",
+    "health_insurance",
+    "gym_fitness",
+    "ayurveda_homeopathy",
+    "other"
+  ],
+  "education": [
+    "books_course_material",
+    "coaching_classes",
+    "online_courses",
+    "exam_fees",
+    "certifications",
+    "stationery",
+    "other"
+  ],
+  "personal_care": [
+    "salon_haircut",
+    "grooming_products",
+    "cosmetics_makeup",
+    "hygiene_toiletries",
+    "spa_massage",
+    "laundry_dryclean",
+    "other"
+  ],
+  "subscriptions": [
+    "netflix_ott",
+    "spotify_music",
+    "saas_tools",
+    "cloud_storage",
+    "news_magazines",
+    "gym_membership",
+    "other"
+  ],
+  "insurance": [
+    "health_insurance",
+    "vehicle_insurance",
+    "life_insurance",
+    "home_insurance",
+    "premium_payment",
+    "claim_reimbursement",
+    "other"
+  ],
+  "travel": [
+    "flights_tickets",
+    "trains_buses",
+    "hotels_stays",
+    "local_transport",
+    "visa_passport",
+    "travel_insurance",
+    "other"
+  ],
+  "family": [
+    "school_fees",
+    "pocket_money",
+    "medical_family",
+    "gifts_festivals",
+    "toys_clothes_kids",
+    "family_outings",
+    "other"
+  ],
+  "finance": [
+    "bank_charges",
+    "atm_withdrawal",
+    "investment_sip",
+    "mutual_funds",
+    "stocks_trading",
+    "crypto",
+    "other"
+  ],
+  "home_maintenance": [
+    "cleaning_supplies",
+    "kitchenware",
+    "electrical_repairs",
+    "plumbing",
+    "pest_control",
+    "painting",
+    "other"
+  ],
+  "gifts_donations": [
+    "birthdays_weddings",
+    "festivals_diwali",
+    "charity_ngo",
+    "religious_offerings",
+    "office_gifts",
+    "other"
+  ],
+  "professional": [
+    "office_supplies",
+    "business_meals",
+    "client_gifts",
+    "training_workshops",
+    "conference_fees",
+    "other"
+  ],
+  "misc": [
+    "uncategorized",
+    "cash_withdrawals",
+    "rounding_adjustments",
+    "lost_money",
+    "other"
+  ]
+}

@@ -1,46 +1,139 @@
-import random
 from fastmcp import FastMCP
-
-import qrcode
-from PIL import Image
+from Database.database import get_db
+from typing import Optional
+import uuid
 
 # Create a server instance
-mcp = FastMCP(name="Expense Tracker Server")
+mcp = FastMCP(name="Expense Tracker MCP Server")
 
-# tool 1
+# tool 1 -> add an expense to the database
 @mcp.tool
-def roll_dice(n_dice: int) -> list[int]:
-    """Roll a dice between numbers 1 to 6 for given number of times"""
-    return [random.randint(1,6) for _ in range(n_dice)]
+def add_Expense(
+    expense_amount:float, 
+    expense_description:str, 
+    expense_date:Optional[str]
+    ):
+    """This tool will add expense to the database directly and return message
+    Args: expense amount, expense description, expense date(optional)
+    """
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    
+    try:
+        expense_id = str(uuid.uuid4())
+        if expense_date:
+            db_cursor.execute(
+                """INSERT INTO expenses(expense_id, 
+                                    amount, 
+                                    category, 
+                                    expense_date) 
+                VALUES (%s, %s, %s, %s)""",
+                (expense_id, expense_amount, expense_description, expense_date)
+            )
+            db_connection.commit()
+            return {"result":{"status": "success", "message":"Expense added successfully"}}
+        else:
+            db_cursor.execute(
+                """INSERT INTO expenses(expense_id, 
+                                    amount, 
+                                    category) 
+                VALUES (%s, %s, %s)""",
+                (expense_id, expense_amount, expense_description)
+            )
+            db_connection.commit()
+            return {"result":{"status": "success", "message":"Expense added successfully"}}
+    except Exception as e:
+        return {"result":{"status": "error", "message": str(e)}}
+    finally:
+        db_cursor.close()
+        db_connection.close()
 
-# tool2 
+# tool 2
 @mcp.tool
-def generate_qr_code(link, filename="qr_code.png"):
+def get_all_expenses():
+    """This tool will get all expenses from the database directly 
     """
-    Generate a QR code for the given link
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
     
-    Args:
-        link (str): The URL or text to encode in the QR code
-        filename (str): The output filename (default: qr_code.png)
-    """
-    # Create QR code instance
-    qr = qrcode.QRCode(
-        version=1,  # Controls the size of the QR code
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
-    )
+    try:
+        expenses = []
+        db_cursor.execute(
+                """SELECT * FROM expenses ORDER BY expense_date DESC;"""
+            )
+        db_expenses = db_cursor.fetchall()
+        for row in db_expenses:
+            expense = {
+                "Expense Id": row[0],
+                "Amount": row[1],
+                "Category": row[2],
+                "Date": row[3]
+            }
+            expenses.append(expense)
+        return {"result":{
+            "status": "success", 
+            "expenses":expenses,
+            "message": "Expenses tracked"
+        }}
     
-    # Add data to the QR code
-    qr.add_data(link)
-    qr.make(fit=True)
-    
-    # Create an image from the QR code
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    # Save the image
-    img.save(filename)
-    print(f"QR code generated successfully and saved as '{filename}'")
+    except Exception as e:
+        return {"result":{"status": "error", "message": str(e)}}
+    finally:
+        db_cursor.close()
+        db_connection.close()
 
-if __name__ == "main":
-    mcp.run()
+# tool 3 
+@mcp.tool
+def updateExpense(
+    expense_id: str,
+    expense_amount: Optional[float] = None, 
+    expense_description: Optional[str] = None, 
+    expense_date: Optional[str] = None
+):
+    """Update an expense in the database. Only provide fields you want to update
+    Args: expense_id (required), and any optional fields to update
+    """
+    db_connection = get_db()
+    db_cursor = db_connection.cursor()
+    
+    try:
+        # Build dynamic UPDATE query
+        updates = []
+        params = []
+        
+        if expense_amount is not None:
+            updates.append("amount = %s")
+            params.append(expense_amount)
+        
+        if expense_description is not None:
+            updates.append("category = %s")
+            params.append(expense_description)
+        
+        if expense_date is not None:
+            updates.append("expense_date = %s")
+            params.append(expense_date)
+        
+        if not updates:
+            return {"result": {"status": "error", "message": "No fields to update"}}
+        
+        # Add expense_id as final parameter
+        params.append(expense_id)
+        
+        # Build and execute UPDATE query
+        query = f"UPDATE expenses SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE expense_id = %s"
+        
+        db_cursor.execute(query, params)
+        db_connection.commit()
+        
+        if db_cursor.rowcount == 0:
+            return {"result": {"status": "error", "message": f"Expense {expense_id} not found"}}
+        
+        return {"result": {"status": "success", "message": "Expense updated successfully"}}
+    
+    except Exception as e:
+        db_connection.rollback()
+        return {"result": {"status": "error", "message": str(e)}}
+    finally:
+        db_cursor.close()
+        db_connection.close()
+

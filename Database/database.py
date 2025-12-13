@@ -1,36 +1,52 @@
-import psycopg2
+import asyncpg
 import os
 from dotenv import load_dotenv
 import logging
 
-def get_db():
-    # Load environment variables from .env file
-    load_dotenv()
+load_dotenv()
 
-    # Database connection details
-    DB_HOST = os.getenv("DB_HOST")
-    DB_NAME = os.getenv("DB_NAME")
-    DB_USER = os.getenv("DB_USER")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
-    DB_PORT = os.getenv("DB_PORT")
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", 5433)
+
+class AsyncDatabase:
+    _pool = None
     
-    if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
-        raise ValueError("Missing required database environment variables")
-    
-    try:
-        # Connect to the database
-        conn = psycopg2.connect(
+    @classmethod
+    async def init_pool(cls):
+        """Initialize Connection pool"""
+        cls._pool = await asyncpg.create_pool(
             host=DB_HOST,
             database=DB_NAME,
             user=DB_USER,
             password=DB_PASSWORD,
             port=int(DB_PORT),
-            sslmode='disable'
+            ssl=False,
+            min_size=10,
+            max_size=20
         )
 
-        logging.info("📈 Database Connected")
-        return conn
-        
-    except psycopg2.DatabaseError as e:
-        logging.error(f"An error occurred while connecting: {e}")
-        raise
+    @classmethod
+    async def close_pool(cls):
+        """Close Connection pool"""
+        if cls._pool:
+            await cls._pool.close()
+    
+    @classmethod
+    def get_pool(cls):
+        """Get the connection pool"""
+        return cls._pool
+            
+    @classmethod
+    async def get_connections(cls):
+        """Get async database connection"""
+        if not cls._pool:
+            await cls.init_pool()
+        return await cls._pool.acquire()
+    
+    
+async def get_db():
+    """Get async database connection"""
+    return await AsyncDatabase.get_connections()

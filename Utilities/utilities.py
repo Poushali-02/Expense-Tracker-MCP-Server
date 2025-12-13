@@ -1,4 +1,4 @@
-# ---- UTITLITES ----
+# ---- UTILITIES ----
 
 def normalize_category(category: str) -> str:
     """Normalize category names to lowercase for consistency"""

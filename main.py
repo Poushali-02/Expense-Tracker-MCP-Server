@@ -1,5 +1,5 @@
 from fastmcp import FastMCP
-from Database.database import get_db
+from Database.database import get_db, AsyncDatabase
 from typing import Optional
 from pathlib import Path
 import json
@@ -14,7 +14,7 @@ mcp = FastMCP(name="Expense Tracker MCP Server")
 """ ----- Authentication Tools ----- """ 
 # Tool 1: Register user
 @mcp.tool
-def register_user(
+async def register_user(
     username:str,
     email:str,
     password:str,
@@ -34,11 +34,10 @@ def register_user(
         Returns:
             dict: User ID, token, and success status
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
-        isValid, message = AuthManager.validate_password_strength(password)
+        isValid, message = await AuthManager.validate_password_strength(password)
         if not isValid:
             return {
                 "result": {
@@ -48,9 +47,8 @@ def register_user(
             }
             
         # username unique?
-        USERNAME_QUERY="SELECT user_id FROM users WHERE username = %s"
-        db_cursor.execute(USERNAME_QUERY, [username])
-        if db_cursor.fetchone():
+        USERNAME_QUERY="SELECT user_id FROM users WHERE username = $1"
+        if await db_connection.fetchrow(USERNAME_QUERY, username):
             return {
                 "result": {
                     "status": "error",
@@ -59,9 +57,8 @@ def register_user(
             }
             
         # email exists?
-        EMAIL_QUERY="SELECT user_id FROM users WHERE email = %s"
-        db_cursor.execute(EMAIL_QUERY, [email])
-        if db_cursor.fetchone():
+        EMAIL_QUERY="SELECT user_id FROM users WHERE email = $1"
+        if await db_connection.fetchrow(EMAIL_QUERY, email):
             return {
                 "result": {
                     "status": "error",
@@ -73,14 +70,12 @@ def register_user(
         user_id = str(uuid.uuid4())
         
         # hash password
-        password_hash = AuthManager.hash_password(password)
+        password_hash = await AuthManager.hash_password(password)
         EXECUTE_QUERY="""
             INSERT INTO users(user_id, username, full_name, email, password_hash)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5)
         """
-        PARAMS=[user_id, username, full_name, email, password_hash]
-        db_cursor.execute(EXECUTE_QUERY, PARAMS)
-        db_connection.commit()
+        await db_connection.execute(EXECUTE_QUERY, user_id, username, full_name, email, password_hash)
         
         token = AuthManager.create_token(user_id, username)
         return {"result": {
@@ -92,16 +87,14 @@ def register_user(
         }}
     
     except Exception as e:
-        db_connection.rollback()
         return {"result": {"status": "error", "message": str(e)}}
     
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 2: Login user
 @mcp.tool
-def login_user(
+async def login_user(
     username:str,
     password:str
 ):
@@ -117,13 +110,11 @@ def login_user(
     Returns:
         dict: User ID, token, and success status"""
         
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
-    QUERY="SELECT user_id, password_hash FROM users WHERE username=%s AND active=TRUE"
+    db_connection = await get_db()
+    QUERY="SELECT user_id, password_hash FROM users WHERE username=$1 AND active=TRUE"
 
     try:
-        db_cursor.execute(QUERY, [username])
-        result = db_cursor.fetchone()
+        result = await db_connection.fetchrow(QUERY, username)
         if not result:
             return {
                 "result":{
@@ -131,9 +122,10 @@ def login_user(
                     "message": "Invalid username or password"
                 }
             }
-        user_id, password_hash = result
+        user_id = str(result['user_id'])
+        password_hash = result['password_hash']
         # Verify password
-        if not AuthManager.verify_password(password, password_hash):
+        if not await AuthManager.verify_password(password, password_hash):
             return {"result": {"status": "error", "message": "Invalid username or password"}}
         
         token = AuthManager.create_token(user_id, username)
@@ -152,8 +144,7 @@ def login_user(
                 }
             }
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 3: Verify token
 @mcp.tool
@@ -191,7 +182,7 @@ def verify_token(
 
 # Tool 4: Change password
 @mcp.tool
-def change_password(
+async def change_password(
     user_id:str,
     old_password:str,
     new_password:str
@@ -208,11 +199,10 @@ def change_password(
     Returns:
         dict: Success or error status"""
         
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
-        isValid, message = AuthManager.validate_password_strength(new_password)
+        isValid, message = await AuthManager.validate_password_strength(new_password)
         if not isValid:
             return {
                 "result":{
@@ -221,10 +211,9 @@ def change_password(
                 }
             }
         
-        # get ser
-        CHECK_QUERY="SELECT password_hash FROM users WHERE user_id = %s"
-        db_cursor.execute(CHECK_QUERY, [user_id])
-        user = db_cursor.fetchone()
+        # get user
+        CHECK_QUERY="SELECT password_hash FROM users WHERE user_id = $1"
+        user = await db_connection.fetchrow(CHECK_QUERY, user_id)
         if not user:
             return {
                 "result": {
@@ -233,10 +222,10 @@ def change_password(
                 }
             }
         
-        password_hash = user[0]
+        password_hash = user['password_hash']
         
-        # verify passsword
-        if not AuthManager.verify_password(old_password, password_hash):
+        # verify password
+        if not await AuthManager.verify_password(old_password, password_hash):
             return {
                 "result": {
                     "status": "error", 
@@ -244,11 +233,10 @@ def change_password(
                 }
             }
         
-        new_hash = AuthManager.hash_password(new_password)
+        new_hash = await AuthManager.hash_password(new_password)
         
-        ADD_QUERY="UPDATE users SET password_hash=%s, updated_at=CURRENT_TIMESTAMP WHERE user_id=%s"
-        db_cursor.execute(ADD_QUERY, [new_hash, user_id])     
-        db_connection.commit()
+        ADD_QUERY="UPDATE users SET password_hash=$1, updated_at=CURRENT_TIMESTAMP WHERE user_id=$2"
+        await db_connection.execute(ADD_QUERY, new_hash, user_id)
         return {
             "result": {
                 "status": "success",
@@ -257,17 +245,15 @@ def change_password(
         }
            
     except Exception as e:
-        db_connection.rollback()
         return {"result": {"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
         
         
 """ ----- Transaction Tools -----"""
 # Tool 1: add a transactions to the database
 @mcp.tool
-def addTransaction(
+async def addTransaction(
     token: str,
     amount: float,
     category: str,
@@ -300,8 +286,7 @@ def addTransaction(
     Returns:
         dict: {"result": {"status": "success", "message": "Expense added successfully"}}
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         # Authenticate user
@@ -336,7 +321,7 @@ def addTransaction(
                 }
             }
         
-        # Build dynamic query
+        # Build dynamic query with asyncpg placeholders
         params = ['amount', 'transaction_type', 'category', 'tags', 'payment_method', 'status']
         vals = [amount, transaction_type.lower(), category.lower(), tags.lower(), payment_method.lower(), status.lower()]
         
@@ -345,8 +330,11 @@ def addTransaction(
             vals.append(frequency.lower())
         
         if transaction_date:
+            from datetime import datetime
             params.append('transaction_date')
-            vals.append(transaction_date)
+            # Convert string date (YYYY-MM-DD) to date object
+            date_obj = datetime.strptime(transaction_date, '%Y-%m-%d').date()
+            vals.append(date_obj)
         
         if notes:
             params.append('notes')
@@ -355,11 +343,11 @@ def addTransaction(
         params.insert(0, 'user_id')
         vals.insert(0, user_id)
 
-        placeholders = ', '.join(['%s'] * len(vals))
+        # Create asyncpg placeholders ($1, $2, $3, ...)
+        placeholders = ', '.join([f'${i+1}' for i in range(len(vals))])
         query = f"INSERT INTO transactions({', '.join(params)}) VALUES ({placeholders})"
         
-        db_cursor.execute(query, vals)
-        db_connection.commit()
+        await db_connection.execute(query, *vals)
         
         return {
             "result": {
@@ -371,12 +359,11 @@ def addTransaction(
     except Exception as e:
         return {"result":{"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 2: get all transactions from db
 @mcp.tool
-def get_all_transactions(
+async def get_all_transactions(
     token: str,
     user_id: Optional[str] = None
 ):
@@ -389,8 +376,7 @@ def get_all_transactions(
     Returns:
         dict: Transactions list with status and message
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         
@@ -406,24 +392,23 @@ def get_all_transactions(
         user_id = payload['user_id']
         
         transactions = []
-        db_cursor.execute(
-                """SELECT * FROM transactions WHERE user_id=%s ORDER BY transaction_date DESC;""", [user_id]
+        db_transactions = await db_connection.fetch(
+                """SELECT * FROM transactions WHERE user_id=$1 ORDER BY transaction_date DESC;""", user_id
             )
-        db_transactions = db_cursor.fetchall()
         for row in db_transactions:
             transaction = {
-                "Id": str(row[1]),  # transaction_id
-                "Type": row[2],     # transaction_type
-                "Date": str(row[3]), # transaction_date
-                "Amount": float(row[4]) if row[4] else 0, # amount
-                "Category": str(row[5]), # category
-                "Tags": row[6],     # tags
-                "Notes": row[7],     # notes
-                "Payment Method": row[8], # payment_method
-                "Status": row[9],    # status
-                "Frequency": row[10], # frequency
-                "Created": str(row[11]), # created_at
-                "Updated": str(row[12])  # updated_at
+                "Id": str(row['transaction_id']),
+                "Type": row['transaction_type'],
+                "Date": str(row['transaction_date']),
+                "Amount": float(row['amount']) if row['amount'] else 0,
+                "Category": str(row['category']),
+                "Tags": row['tags'],
+                "Notes": row['notes'],
+                "Payment Method": row['payment_method'],
+                "Status": row['status'],
+                "Frequency": row['frequency'],
+                "Created": str(row['created_at']),
+                "Updated": str(row['updated_at'])
             }
             transactions.append(transaction)
         return {"result":{
@@ -435,12 +420,11 @@ def get_all_transactions(
     except Exception as e:
         return {"result":{"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 3: get date wise transactions
 @mcp.tool
-def get_selected_transactions(
+async def get_selected_transactions(
     token: str,
     start_date: str, 
     end_date: str,
@@ -459,8 +443,7 @@ def get_selected_transactions(
     Returns:
         dict: Transactions list in date range with status and message
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         
@@ -475,26 +458,29 @@ def get_selected_transactions(
             }
         user_id = payload['user_id']
         
+        # Convert string dates (YYYY-MM-DD) to date objects
+        from datetime import datetime
+        start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
         # Build and execute SELECT query
-        query = f"SELECT * FROM transactions WHERE transaction_date BETWEEN %s AND %s AND user_id=%s ORDER BY transaction_date DESC;"
+        query = f"SELECT * FROM transactions WHERE transaction_date BETWEEN $1 AND $2 AND user_id=$3 ORDER BY transaction_date DESC;"
         transactions = []
-        params = [start_date, end_date, user_id]
-        db_cursor.execute(query, params)
-        db_transactions = db_cursor.fetchall()
+        db_transactions = await db_connection.fetch(query, start_date_obj, end_date_obj, user_id)
         for row in db_transactions:
             transaction = {
-                "Id": str(row[1]),  # transaction_id
-                "Type": row[2],     # transaction_type
-                "Date": str(row[3]), # transaction_date
-                "Amount": float(row[4]) if row[4] else 0, # amount
-                "Category": str(row[5]), # category
-                "Tags": row[6],     # tags
-                "Notes": row[7],     # notes
-                "Payment Method": row[8], # payment_method
-                "Status": row[9],    # status
-                "Frequency": row[10], # frequency
-                "Created": str(row[11]), # created_at
-                "Updated": str(row[12])  # updated_at
+                "Id": str(row['transaction_id']),
+                "Type": row['transaction_type'],
+                "Date": str(row['transaction_date']),
+                "Amount": float(row['amount']) if row['amount'] else 0,
+                "Category": str(row['category']),
+                "Tags": row['tags'],
+                "Notes": row['notes'],
+                "Payment Method": row['payment_method'],
+                "Status": row['status'],
+                "Frequency": row['frequency'],
+                "Created": str(row['created_at']),
+                "Updated": str(row['updated_at'])
             }
             transactions.append(transaction)
         if transactions:
@@ -513,12 +499,11 @@ def get_selected_transactions(
         return {"result":{"status": "error", "message": str(e)}}
     
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
        
 # Tool 4: get total expense
 @mcp.tool
-def get_total_transactions(
+async def get_total_transactions(
     token: str,
     start_date: Optional[str] = None, 
     end_date: Optional[str] = None, 
@@ -538,8 +523,7 @@ def get_total_transactions(
     Returns:
         dict: Total amount with status and message
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         # Authenticate user
@@ -555,41 +539,47 @@ def get_total_transactions(
         
         checks = []
         params = []
+        placeholder_index = 1
+        
+        # Convert string dates to date objects if provided
+        from datetime import datetime
         if start_date is not None: 
-            checks.append("transaction_date >= %s")
-            params.append(start_date)
+            checks.append(f"transaction_date >= ${placeholder_index}")
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            params.append(start_date_obj)
+            placeholder_index += 1
             
         if end_date is not None:
-            checks.append("transaction_date <= %s")
-            params.append(end_date)
+            checks.append(f"transaction_date <= ${placeholder_index}")
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+            params.append(end_date_obj)
+            placeholder_index += 1
             
         if category is not None:
-            checks.append("category = %s")
+            checks.append(f"category = ${placeholder_index}")
             params.append(category.lower())
+            placeholder_index += 1
         
         if not checks:
             return {"result": {"status": "error", "message": "No fields to add"}}
         
         params.append(user_id)
+        user_id_placeholder = placeholder_index
         
         # For Debit
-        
-        DEBIT_QUERY=f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='expense' AND user_id=%s ORDER BY transaction_date DESC"
-        db_cursor.execute(DEBIT_QUERY, params)
-        db_expenses = db_cursor.fetchall()
+        DEBIT_QUERY = f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='expense' AND user_id=${user_id_placeholder} ORDER BY transaction_date DESC"
+        db_expenses = await db_connection.fetch(DEBIT_QUERY, *params)
         expenses = 0
         for row in db_expenses:
-            expenses += float(row[4]) if row[4] else 0
+            expenses += float(row['amount']) if row['amount'] else 0
         
         # For credit
-        
-        CREDIT_QUERY=f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='credit' AND user_id=%s ORDER BY transaction_date DESC"
-        db_cursor.execute(CREDIT_QUERY, params)
-        db_credits = db_cursor.fetchall()
+        CREDIT_QUERY = f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='credit' AND user_id=${user_id_placeholder} ORDER BY transaction_date DESC"
+        db_credits = await db_connection.fetch(CREDIT_QUERY, *params)
         credits = 0
         
         for row in db_credits:
-            credits += float(row[4]) if row[4] else 0
+            credits += float(row['amount']) if row['amount'] else 0
         
         if expenses or credits:
             return {"result":{
@@ -615,12 +605,11 @@ def get_total_transactions(
             }
         }
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 5: get top category transactions
 @mcp.tool
-def get_top_transaction_categories(
+async def get_top_transaction_categories(
     token: str,
     user_id: Optional[str] = None
 ):
@@ -632,8 +621,7 @@ def get_top_transaction_categories(
     Returns:
         dict: List of top 5 transactions with details
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         
@@ -652,45 +640,41 @@ def get_top_transaction_categories(
         categories_debit = []
         
         # Filter for expenses
-        DEBIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='expense' AND user_id=%s ORDER BY amount DESC LIMIT 5"
-        db_cursor.execute(DEBIT_QUERY, [user_id])
-        db_expenses = db_cursor.fetchall()
+        DEBIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='expense' AND user_id=$1 ORDER BY amount DESC LIMIT 5"
+        db_expenses = await db_connection.fetch(DEBIT_QUERY, user_id)
         
         for row in db_expenses:
-            if len(row) >= 13:
-                expense = {
-                    "Id": str(row[1]),  # transaction_id
-                    "Type": row[2],     # transaction_type
-                    "Date": str(row[3]), # transaction_date
-                    "Amount": float(row[4]) if row[4] else 0, # amount
-                    "Category": row[5], # category
-                    "Tags": row[6],     # tags
-                    "Notes": row[7],     # notes
-                    "Payment Method": row[8], # payment_method
-                    "Status": row[9]    # status
-                }
-                categories_debit.append(expense)
+            expense = {
+                "Id": str(row['transaction_id']),
+                "Type": row['transaction_type'],
+                "Date": str(row['transaction_date']),
+                "Amount": float(row['amount']) if row['amount'] else 0,
+                "Category": row['category'],
+                "Tags": row['tags'],
+                "Notes": row['notes'],
+                "Payment Method": row['payment_method'],
+                "Status": row['status']
+            }
+            categories_debit.append(expense)
         
         
         # Filter for credits
-        CREDIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='credit' AND user_id=%s  ORDER BY amount DESC LIMIT 5"
-        db_cursor.execute(CREDIT_QUERY, [user_id])
-        db_credits = db_cursor.fetchall()
+        CREDIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='credit' AND user_id=$1 ORDER BY amount DESC LIMIT 5"
+        db_credits = await db_connection.fetch(CREDIT_QUERY, user_id)
         
         for row in db_credits:
-            if len(row) >= 13:
-                credit = {
-                    "Id": str(row[1]),  # transaction_id
-                    "Type": row[2],     # transaction_type
-                    "Date": str(row[3]), # transaction_date
-                    "Amount": float(row[4]) if row[4] else 0, # amount
-                    "Category": row[5], # category
-                    "Tags": row[6],     # tags
-                    "Notes": row[7],     # notes
-                    "Payment Method": row[8], # payment_method
-                    "Status": row[9]    # status
-                }
-                categories_credit.append(credit)
+            credit = {
+                "Id": str(row['transaction_id']),
+                "Type": row['transaction_type'],
+                "Date": str(row['transaction_date']),
+                "Amount": float(row['amount']) if row['amount'] else 0,
+                "Category": row['category'],
+                "Tags": row['tags'],
+                "Notes": row['notes'],
+                "Payment Method": row['payment_method'],
+                "Status": row['status']
+            }
+            categories_credit.append(credit)
         
         
         return {"result": {
@@ -703,12 +687,11 @@ def get_top_transaction_categories(
     except Exception as e:
         return {"result": {"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 6: get summary of transactions
 @mcp.tool
-def get_summary(
+async def get_summary(
     token: str,
     transaction_type: Optional[str] = None,
     category: Optional[str] = None,
@@ -740,8 +723,7 @@ def get_summary(
         dict: Transactions list with summary statistics (total, count, average, category breakdown)
     """
     
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         
@@ -759,44 +741,57 @@ def get_summary(
         # Build WHERE clause dynamically
         where_conditions = []
         params = []
+        placeholder_index = 1
         
+        # Convert string dates to date objects if provided
+        from datetime import datetime
         if start_date and end_date:
-            where_conditions.append("transaction_date BETWEEN %s AND %s")
-            params.extend([start_date, end_date])
+            where_conditions.append(f"transaction_date BETWEEN ${placeholder_index} AND ${placeholder_index + 1}")
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+            params.extend([start_date_obj, end_date_obj])
+            placeholder_index += 2
         
         if category:
-            where_conditions.append("category = %s")
+            where_conditions.append(f"category = ${placeholder_index}")
             params.append(category.lower())
+            placeholder_index += 1
         
         if tags:
-            where_conditions.append("tags = %s")
+            where_conditions.append(f"tags = ${placeholder_index}")
             params.append(tags)
+            placeholder_index += 1
         
         if payment_method:
-            where_conditions.append("payment_method = %s")
+            where_conditions.append(f"payment_method = ${placeholder_index}")
             params.append(payment_method)
+            placeholder_index += 1
         
         if status:
-            where_conditions.append("status = %s")
+            where_conditions.append(f"status = ${placeholder_index}")
             params.append(status)
+            placeholder_index += 1
         
         if frequency:
-            where_conditions.append("frequency = %s")
+            where_conditions.append(f"frequency = ${placeholder_index}")
             params.append(frequency)
+            placeholder_index += 1
         
         if transaction_type:
-            where_conditions.append("transaction_type = %s")
+            where_conditions.append(f"transaction_type = ${placeholder_index}")
             params.append(transaction_type)
+            placeholder_index += 1
         
-        where_conditions.append("user_id=%s")
+        where_conditions.append(f"user_id=${placeholder_index}")
         params.append(user_id)
         
-        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+        where_clause = " AND ".join(where_conditions) if where_conditions else "user_id=$1"
+        if not where_conditions:
+            params = [user_id]
         
         # Get all matching transactions
         query = f"SELECT * FROM transactions WHERE {where_clause} ORDER BY transaction_date DESC"
-        db_cursor.execute(query, params)
-        db_items = db_cursor.fetchall()
+        db_items = await db_connection.fetch(query, *params)
         
         if not db_items:
             return {"result": {
@@ -817,18 +812,18 @@ def get_summary(
         
         for row in db_items:
             transaction = {
-                "Id": str(row[1]),  # transaction_id
-                "Type": row[2],     # transaction_type
-                "Date": str(row[3]), # transaction_date
-                "Amount": float(row[4]) if row[4] else 0, # amount
-                "Category": str(row[5]), # category
-                "Tags": row[6],     # tags
-                "Notes": row[7],     # notes
-                "Payment Method": row[8], # payment_method
-                "Status": row[9],    # status
-                "Frequency": row[10], # frequency
-                "Created": str(row[11]), # created_at
-                "Updated": str(row[12])  # updated_at
+                "Id": str(row['transaction_id']),
+                "Type": row['transaction_type'],
+                "Date": str(row['transaction_date']),
+                "Amount": float(row['amount']) if row['amount'] else 0,
+                "Category": str(row['category']),
+                "Tags": row['tags'],
+                "Notes": row['notes'],
+                "Payment Method": row['payment_method'],
+                "Status": row['status'],
+                "Frequency": row['frequency'],
+                "Created": str(row['created_at']),
+                "Updated": str(row['updated_at'])
             }
             transactions.append(transaction)
             total_amount += transaction["Amount"]
@@ -856,12 +851,11 @@ def get_summary(
     except Exception as e:
         return {"result": {"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
-# Tool 7: update a single expense
+# Tool 7: update a single transaction
 @mcp.tool
-def updateTransaction(
+async def updateTransaction(
     token: str,
     transaction_id: str,
     amount: Optional[float] = None,
@@ -894,8 +888,7 @@ def updateTransaction(
     Returns:
         dict: Success or error message with status
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         # Authenticate user
@@ -912,70 +905,81 @@ def updateTransaction(
         # Build dynamic UPDATE query
         updates = []
         params = []
+        placeholder_index = 1
         
-        if amount is not None: # amount
-            updates.append("amount = %s")
+        if amount is not None:
+            updates.append(f"amount = ${placeholder_index}")
             params.append(amount)
+            placeholder_index += 1
         
-        if category is not None: # category
-            updates.append("category = %s")
+        if category is not None:
+            updates.append(f"category = ${placeholder_index}")
             params.append(category.lower())
+            placeholder_index += 1
         
-        if transaction_date is not None: # date
-            updates.append("transaction_date = %s")
+        if transaction_date is not None:
+            updates.append(f"transaction_date = ${placeholder_index}")
             params.append(transaction_date)
+            placeholder_index += 1
             
-        if tags is not None: # tags
-            updates.append("tags = %s")
+        if tags is not None:
+            updates.append(f"tags = ${placeholder_index}")
             params.append(tags.lower())
+            placeholder_index += 1
         
-        if payment_method is not None: # payment method
-            updates.append("payment_method = %s")
+        if payment_method is not None:
+            updates.append(f"payment_method = ${placeholder_index}")
             params.append(payment_method.lower())
+            placeholder_index += 1
         
-        if status is not None: # status
-            updates.append("status = %s")
+        if status is not None:
+            updates.append(f"status = ${placeholder_index}")
             params.append(status.lower())
+            placeholder_index += 1
             
-        if frequency is not None: # frequency
-            updates.append("frequency = %s")
+        if frequency is not None:
+            updates.append(f"frequency = ${placeholder_index}")
             params.append(frequency.lower())
+            placeholder_index += 1
         
-        if notes is not None: # notes
-            updates.append("notes = %s")
+        if notes is not None:
+            updates.append(f"notes = ${placeholder_index}")
             params.append(notes.lower())
+            placeholder_index += 1
         
-        if transaction_type is not None: # type
-            updates.append("transaction_type = %s")
+        if transaction_type is not None:
+            updates.append(f"transaction_type = ${placeholder_index}")
             params.append(transaction_type.lower())
+            placeholder_index += 1
             
         if not updates:
             return {"result": {"status": "error", "message": "No fields to update"}}
         
-        # Add transaction_id as final parameter
+        # Verify transaction exists for this user
+        verify_query = "SELECT transaction_id FROM transactions WHERE transaction_id = $1 AND user_id = $2"
+        existing = await db_connection.fetchrow(verify_query, transaction_id, user_id)
+        if not existing:
+            return {"result": {"status": "error", "message": f"Transaction {transaction_id} not found"}}
+        
+        # Add transaction_id and user_id as final parameters
         params.append(transaction_id)
         params.append(user_id)
+        
         # Build and execute UPDATE query
-        query = f"UPDATE transactions SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = %s AND user_id = %s"
+        query = f"UPDATE transactions SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ${placeholder_index} AND user_id = ${placeholder_index + 1}"
         
-        db_cursor.execute(query, params)
-        db_connection.commit()
-        
-        if db_cursor.rowcount == 0:
-            return {"result": {"status": "error", "message": f"Transaction {transaction_id} not found"}}
+        await db_connection.execute(query, *params)
         
         return {"result": {"status": "success", "message": "Expense updated successfully"}}
     
     except Exception as e:
-        db_connection.rollback()
         return {"result": {"status": "error", "message": str(e)}}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 8: get monthly report
 @mcp.tool
-def monthly_report(
+async def monthly_report(
     token: str,
     year: int, 
     month: int,
@@ -1000,6 +1004,8 @@ def monthly_report(
     """
     from datetime import datetime, timedelta
     
+    db_connection = await get_db()
+    
     try:
         # Authenticate user
         payload = AuthManager.verify_token(token)
@@ -1019,36 +1025,25 @@ def monthly_report(
         else:
             last_day = datetime(year, month + 1, 1) - timedelta(days=1)
         
-        start_date = first_day.strftime('%Y-%m-%d')
-        end_date = last_day.strftime('%Y-%m-%d')
+        # Convert to date objects (not strings) for database query
+        start_date = first_day.date()
+        end_date = last_day.date()
         month_name = first_day.strftime('%B')
         
-        db_connection = get_db()
-        db_cursor = db_connection.cursor()
-        
-        CREDIT_QUERY = """SELECT transaction_id, transaction_type, transaction_date, amount, category, tags, notes, payment_method, status, frequency, created_at, updated_at 
-                   FROM transactions WHERE transaction_date >= %s AND transaction_date <= %s 
+        CREDIT_QUERY = """SELECT * FROM transactions WHERE transaction_date >= $1 AND transaction_date <= $2 
                    AND transaction_type='credit'
-                   AND user_id = %s
+                   AND user_id = $3
                    ORDER BY transaction_date DESC"""
                    
-        DEBIT_QUERY = """SELECT transaction_id, transaction_type, transaction_date, amount, category, tags, notes, payment_method, status, frequency, created_at, updated_at 
-                   FROM transactions WHERE transaction_date >= %s AND transaction_date <= %s 
+        DEBIT_QUERY = """SELECT * FROM transactions WHERE transaction_date >= $1 AND transaction_date <= $2 
                    AND transaction_type='expense'
-                   AND user_id = %s
+                   AND user_id = $3
                    ORDER BY transaction_date DESC"""
                    
         params = [start_date, end_date, user_id]
         
-        db_cursor.execute(CREDIT_QUERY, params)
-        db_credits = db_cursor.fetchall()
-        
-        db_cursor.execute(DEBIT_QUERY, params)
-        db_expenses = db_cursor.fetchall()
-        
-        # Separate expenses and credits - removed transaction_type check
-        db_expenses = [row for row in db_expenses]
-        db_credits = [row for row in db_credits]
+        db_credits = await db_connection.fetch(CREDIT_QUERY, *params)
+        db_expenses = await db_connection.fetch(DEBIT_QUERY, *params)
         
         if (not db_credits or len(db_credits) == 0) and (not db_expenses or len(db_expenses) == 0):
             return {"result": {
@@ -1071,64 +1066,38 @@ def monthly_report(
         
         for row in db_expenses:
             try:
-                # Handle dynamic row structure - check available columns
-                # Schema order: transaction_id(0), 
-                                # transaction_type(1), 
-                                # transaction_date(2), 
-                                # amount(3), 
-                                # category(4), 
-                                # tags(5), 
-                                # notes(6), 
-                                # payment_method(7), 
-                                # status(8), 
-                                # frequency(9), 
-                                # created_at(10), 
-                                # updated_at(11)
                 expense = {
-                    "Id": str(row[0]) if len(row) > 0 else "Unknown",
-                    "Type": str(row[1]) if len(row) > 1 else "Unknown",
-                    "Date": str(row[2]) if len(row) > 2 else "",
-                    "Amount": float(row[3]) if len(row) > 3 and row[3] is not None else 0,
-                    "Category": str(row[4]) if len(row) > 4 else "Unknown",
-                    "Tags": str(row[5]) if len(row) > 5 else "",
-                    "Notes": str(row[6]) if len(row) > 6 else "",
-                    "Payment Method": str(row[7]) if len(row) > 7 else "",
-                    "Status": str(row[8]) if len(row) > 8 else ""
+                    "Id": str(row['transaction_id']),
+                    "Type": str(row['transaction_type']),
+                    "Date": str(row['transaction_date']),
+                    "Amount": float(row['amount']) if row['amount'] is not None else 0,
+                    "Category": str(row['category']),
+                    "Tags": str(row['tags']) if row['tags'] else "",
+                    "Notes": str(row['notes']) if row['notes'] else "",
+                    "Payment Method": str(row['payment_method']),
+                    "Status": str(row['status'])
                 }
                 expenses.append(expense)
                 total_expense += expense["Amount"]
-            except (IndexError, TypeError, ValueError) as e:
+            except (KeyError, TypeError, ValueError) as e:
                 continue
             
         for row in db_credits:
             try:
-                # Handle dynamic row structure - check available columns
-                # Schema order: transaction_id(0), 
-                                # transaction_type(1), 
-                                # transaction_date(2), 
-                                # amount(3), 
-                                # category(4), 
-                                # tags(5), 
-                                # notes(6), 
-                                # payment_method(7), 
-                                # status(8), 
-                                # frequency(9), 
-                                # created_at(10), 
-                                # updated_at(11)
                 credit = {
-                    "Id": str(row[0]) if len(row) > 0 else "Unknown",
-                    "Type": str(row[1]) if len(row) > 1 else "Unknown",
-                    "Date": str(row[2]) if len(row) > 2 else "",
-                    "Amount": float(row[3]) if len(row) > 3 and row[3] is not None else 0,
-                    "Category": str(row[4]) if len(row) > 4 else "Unknown",
-                    "Tags": str(row[5]) if len(row) > 5 else "",
-                    "Notes": str(row[6]) if len(row) > 6 else "",
-                    "Payment Method": str(row[7]) if len(row) > 7 else "",
-                    "Status": str(row[8]) if len(row) > 8 else ""
+                    "Id": str(row['transaction_id']),
+                    "Type": str(row['transaction_type']),
+                    "Date": str(row['transaction_date']),
+                    "Amount": float(row['amount']) if row['amount'] is not None else 0,
+                    "Category": str(row['category']),
+                    "Tags": str(row['tags']) if row['tags'] else "",
+                    "Notes": str(row['notes']) if row['notes'] else "",
+                    "Payment Method": str(row['payment_method']),
+                    "Status": str(row['status'])
                 }
                 credits.append(credit)
                 total_credit += credit["Amount"]
-            except (IndexError, TypeError, ValueError) as e:
+            except (KeyError, TypeError, ValueError) as e:
                 continue
         
         if (not expenses or len(expenses) == 0) and (not credits or len(credits) == 0):
@@ -1165,12 +1134,11 @@ def monthly_report(
             "message": str(e)
         }}
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
         
 # Tool 9: get balance
 @mcp.tool
-def balance(
+async def getBalance(
     token: str,
     user_id: Optional[str] = None
 ):
@@ -1183,8 +1151,7 @@ def balance(
     Returns:
         dict: Total credits, total expenses, and net balance
     """
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         # Authenticate user
@@ -1198,16 +1165,14 @@ def balance(
             }
         user_id = payload['user_id']
         
-        QUERY=f"SELECT SUM(amount) FROM transactions WHERE transaction_type=%s AND status='completed' AND user_id = %s"
+        QUERY = "SELECT SUM(amount) FROM transactions WHERE transaction_type=$1 AND status='completed' AND user_id = $2"
         
         # for debit
-        db_cursor.execute(QUERY, ['expense', user_id])
-        expense_result = db_cursor.fetchone()[0]
+        expense_result = await db_connection.fetchval(QUERY, 'expense', user_id)
         expense = float(expense_result) if expense_result else 0
         
         # for credit
-        db_cursor.execute(QUERY, ['credit', user_id])
-        credit_result = db_cursor.fetchone()[0]
+        credit_result = await db_connection.fetchval(QUERY, 'credit', user_id)
         credit = float(credit_result) if credit_result else 0
         
         total_balance = credit - expense
@@ -1228,10 +1193,12 @@ def balance(
                 "message": f"{e}"
             }
         }
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)
 
 # Tool 10: delete a transaction
 @mcp.tool
-def delete_transaction(
+async def delete_transaction(
     token: str,
     transaction_id: str,
     user_id: Optional[str] = None
@@ -1248,8 +1215,7 @@ def delete_transaction(
         dict: Status and message confirming deletion or error
     """
     
-    db_connection = get_db()
-    db_cursor = db_connection.cursor()
+    db_connection = await get_db()
     
     try:
         # Authenticate user
@@ -1263,9 +1229,8 @@ def delete_transaction(
             }
         user_id = payload['user_id']
         
-        query = f"DELETE FROM transactions WHERE transaction_id=%s AND user_id = %s"
-        db_cursor.execute(query, [transaction_id, user_id])
-        db_connection.commit()
+        query = "DELETE FROM transactions WHERE transaction_id=$1 AND user_id=$2"
+        await db_connection.execute(query, transaction_id, user_id)
         return {
             "result" : {
                 "status": "success",
@@ -1280,8 +1245,7 @@ def delete_transaction(
             }
         }
     finally:
-        db_cursor.close()
-        db_connection.close()
+        await AsyncDatabase.get_pool().release(db_connection)
 
 
 """ ----- Resources -----"""

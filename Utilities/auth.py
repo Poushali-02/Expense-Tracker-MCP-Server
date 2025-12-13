@@ -10,16 +10,16 @@ ALGORITHM = 'HS256'
 TOKEN_EXPIRY_HOURS = int(os.getenv('TOKEN_EXPIRY_HOURS', 24))
 
 class AuthManager:
-    """Manage user authentication and JWT Tokens"""
+    """Async manage user authentication and JWT Tokens"""
     
     @staticmethod
-    def hash_password(password: str) -> str:
+    async def hash_password(password: str) -> str:
         """Hash password using bcrypt"""
         salt = bcrypt.gensalt(rounds=12)
         return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
     
     @staticmethod
-    def verify_password(password: str, hashed: str) -> bool:
+    async def verify_password(password: str, hashed: str) -> bool:
         """Verify password against hash"""
         return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
     
@@ -46,7 +46,7 @@ class AuthManager:
             return None
     
     @staticmethod
-    def validate_password_strength(password:str) -> tuple[bool, str]:
+    async def validate_password_strength(password:str) -> tuple[bool, str]:
         """Validate password meets security requirements"""
         if len(password) < 8:
             return False, "Password must be at least 8 characters long"

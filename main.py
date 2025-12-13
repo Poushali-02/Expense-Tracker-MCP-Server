@@ -1250,7 +1250,9 @@ async def delete_transaction(
 
 """ ----- Resources -----"""
 # Resource 1: categories list
-CATEGORIES_PATH = Path(__file__).parent / 'Resources' / 'categories.json'
+import os
+CATEGORIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources', 'categories.json')
+
 @mcp.resource("expense://categories", mime_type="application/json")
 def categories():
     """Get available expense categories from configuration file.
@@ -1262,9 +1264,12 @@ def categories():
     Returns:
         list/dict: Available expense categories in JSON format
     """
-    with open(CATEGORIES_PATH, 'r') as f:
-        categories_data = json.load(f)
-        return categories_data
+    try:
+        with open(CATEGORIES_PATH, 'r') as f:
+            categories_data = json.load(f)
+            return categories_data
+    except FileNotFoundError:
+        return {"error": f"categories.json not found at {CATEGORIES_PATH}"}
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8000)

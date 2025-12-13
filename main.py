@@ -1265,3 +1265,6 @@ def categories():
     with open(CATEGORIES_PATH, 'r') as f:
         categories_data = json.load(f)
         return categories_data
+
+if __name__ == "__main__":
+    mcp.run(transport="http", host="0.0.0.0", port=8000)

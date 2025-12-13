@@ -23,7 +23,7 @@ class AsyncDatabase:
             user=DB_USER,
             password=DB_PASSWORD,
             port=int(DB_PORT),
-            ssl=False,
+            ssl='require',
             min_size=10,
             max_size=20
         )

@@ -16,3 +16,5 @@ def validate_frequency(frequency: str) -> bool:
     """Validate frequency is valid"""
     return frequency in ['none', 'daily', 'weekly', 'monthly'] if frequency else True
 
+def check_email_verified(user) -> bool:
+    return user['email_verified']

@@ -10,7 +10,18 @@ CREATE TABLE IF NOT EXISTS users(
   password_hash VARCHAR(255) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  active BOOLEAN DEFAULT TRUE
+  active BOOLEAN DEFAULT TRUE,
+  
+  -- Email verification fields
+  email_verified BOOLEAN DEFAULT FALSE,
+  verification_token VARCHAR(255),
+  verification_token_expires TIMESTAMP,
+  verification_attempts INTEGER DEFAULT 0,
+  
+  -- Password reset fields
+  reset_token VARCHAR(255),
+  reset_token_expires TIMESTAMP,
+  reset_attempts INTEGER DEFAULT 0
 );
 
 -- transactions

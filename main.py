@@ -6,6 +6,7 @@ import json
 from Utilities import utilities
 from Utilities.auth import AuthManager
 from Utilities.middleware import require_auth
+from Utilities.email_services import EmailService
 import uuid
 from contextlib import asynccontextmanager
 
@@ -258,7 +259,358 @@ async def change_password(
     finally:
         await AsyncDatabase.get_pool().release(db_connection)
         
+# Tool 5: Send Verification Code
+@mcp.tool
+async def send_verification_code(token: str):
+    """Send 6-digit verification code to user's email
+    
+    Args:
+        token(str): JWT Authentication token
         
+    Returns:
+        dict: Status of email sending
+    """
+    
+    payload = AuthManager.verify_token(token)
+    if not payload:
+        return {
+            "result": {
+                "status":"Error",
+                "message": "Invalid or expired token"
+            }
+        }
+        
+    user_id = payload['user_id']
+    db_connection = await get_db()
+    
+    try:
+        user = await db_connection.fetchrow(
+            "SELECT email, username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        
+        if not user:
+            return {
+            "result": {
+                "status":"Error",
+                "message": "User not found"
+            }
+        }
+        
+        if user['email_verified']:
+            return {
+            "result": {
+                "status":"Info",
+                "message": "Email already verified"
+            }
+        }
+            
+        verification_code = EmailService.generate_code()
+        code_expires = EmailService.get_code_expiry(minutes=5)
+        
+        await db_connection.execute(
+             """UPDATE users 
+               SET verification_token = $1, verification_token_expires = $2, verification_attempts = 0 
+               WHERE user_id = $3""",
+            verification_code, code_expires, user_id
+        )
+        
+        success, message = await EmailService.send_verification_code(
+            user['email'], user['username'], verification_code
+        )
+
+        if success:
+            return {
+                "result": {
+                    "status": "success",
+                    "message": "Verification code sent to your email"
+                }
+            }
+        else:
+            return {
+                "result": {
+                    "status": "Error",
+                    "message": message
+                }
+            }
+    
+    except Exception as e:
+        return {
+            "result":{
+                "status": "Error",
+                "message": str(e)
+            }
+        }
+    
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)
+      
+# Tool 6 : Verify Email
+@mcp.tool
+async def verify_email(code: str):
+    """Verify user email with 6-digit code from email.
+    
+    Args:
+        code (str): 6-digit verification code from email
+        
+    Returns:
+        dict: Verification status
+    """
+    MAX_ATTEMPTS = 3
+    db_connection = await get_db()
+    try:
+        user = await db_connection.fetchrow(
+            """SELECT user_id, username, verification_token, verification_token_expires, verification_attempts 
+               FROM users 
+               WHERE verification_token = $1""",
+            code
+        )
+        
+        # If code doesn't match, try to find user by checking all active codes and increment their attempts
+        if not user:
+            # Check if there's a user with pending verification (for attempt tracking)
+            return {
+                "result": {
+                    "status": "Error",
+                    "message": "Invalid verification code"
+                }
+            }
+        
+        # Check if max attempts exceeded
+        if user['verification_attempts'] >= MAX_ATTEMPTS:
+            # Invalidate the code
+            await db_connection.execute(
+                """UPDATE users 
+                   SET verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
+                   WHERE user_id = $1""",
+                str(user['user_id'])
+            )
+            return {
+                "result": {
+                    "status": "Error",
+                    "message": "Too many failed attempts. Please request a new verification code."
+                }
+            }
+        
+        from datetime import datetime
+        if user['verification_token_expires'] < datetime.utcnow():
+            # Clear expired code
+            await db_connection.execute(
+                """UPDATE users 
+                   SET verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
+                   WHERE user_id = $1""",
+                str(user['user_id'])
+            )
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Code expired. Request a new one"
+                }
+            }
+        
+        # Success - verify email and clear code
+        await db_connection.execute(
+            """UPDATE users 
+               SET email_verified = TRUE, verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
+               WHERE user_id = $1""",
+            str(user['user_id'])
+        )
+        
+        return {
+            "result":{
+                "status": "success",
+                "message": "Email verified successfully"
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "result": {
+                "status": "Error",
+                "message": str(e)
+            }
+        }
+    
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)
+        
+# Tool 7 : Forgot password (Request reset code)
+@mcp.tool
+async def forgot_password(email:str):
+    """Send 6-digit password reset code to email
+    
+    Args:
+        email(str): User's registered email address
+    
+    Returns:
+        dict: Status of reset code sending 
+    """
+    
+    db_connection = await get_db()
+    
+    try:
+        user = await db_connection.fetchrow(
+            "SELECT user_id, username, email, email_verified FROM users WHERE email = $1",
+            email
+        )
+        
+        if not user:
+            return {
+                "result":{
+                    "status": "success",
+                    "message": "If this email exists, a reset code has been sent."
+                }
+            }
+            
+        # Nothing can act without verifying email
+            
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
+        
+        reset_code = EmailService.generate_code()
+        code_expires = EmailService.get_code_expiry(minutes=5)
+        
+        await db_connection.execute(
+            """UPDATE users 
+               SET reset_token = $1, reset_token_expires = $2, reset_attempts = 0 
+               WHERE user_id = $3""",
+            reset_code, code_expires, str(user['user_id'])
+        )
+        
+        success, message = await EmailService.send_password_reset_code(
+            user['email'], user['username'], reset_code
+        )
+        
+        if success:
+            return {
+                "result": {
+                    "status": "success", 
+                    "message": "Reset code sent to your email"
+                }
+            }
+        else:
+            return {
+                "result": {
+                    "status": "Error", 
+                    "message": message
+                }
+            }
+    except Exception as e:
+        return {"result": {"status": "error", "message": str(e)}}
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)
+
+# Tool 8 : Reset password
+@mcp.tool
+async def reset_password(code:str, new_password:str):
+    """Reset password using 6-digit code from email
+    
+    Args:
+        code(str): 6-digit code from password reset email
+        new_password (str): New password (min 8 chars, uppercase, lowercase, digit)
+        
+    Returns:
+        dict: Password reset status
+    """
+    MAX_ATTEMPTS = 3
+    db_connection = await get_db()
+    
+    try:
+        isValid, message = await AuthManager.validate_password_strength(new_password)
+        if not isValid:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": message
+                }
+            }
+        
+        # Find user with this reset code
+        user = await db_connection.fetchrow(
+            """SELECT user_id, username, reset_token_expires, reset_attempts, email_verified 
+               FROM users 
+               WHERE reset_token = $1""",
+            code
+        )
+        
+        if not user:
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Invalid reset code"
+                }
+            }
+        
+        # Check if max attempts exceeded
+        if user['reset_attempts'] >= MAX_ATTEMPTS:
+            # Invalidate the code
+            await db_connection.execute(
+                """UPDATE users 
+                   SET reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
+                   WHERE user_id = $1""",
+                str(user['user_id'])
+            )
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Too many failed attempts. Please request a new reset code."
+                }
+            }
+        
+        from datetime import datetime
+        if user['reset_token_expires'] < datetime.utcnow():
+            # Clear expired code
+            await db_connection.execute(
+                """UPDATE users 
+                   SET reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
+                   WHERE user_id = $1""",
+                str(user['user_id'])
+            )
+            return {
+                "result": {
+                    "status": "error", 
+                    "message": "Code expired. Please request a new reset code."
+                }
+            }
+            
+        # Nothing can act without verifying email
+            
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
+        
+        
+        new_hash = await AuthManager.hash_password(new_password)
+        await db_connection.execute(
+            """UPDATE users 
+               SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
+               WHERE user_id = $2""",
+            new_hash, str(user['user_id'])
+        )
+        
+        return {
+            "result": {
+                "status": "success", 
+                "message": f"Password reset successfully for {user['username']}!"
+            }
+        }
+    
+    except Exception as e:
+        return {"result": {"status": "error", "message": str(e)}}
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)
+
 """ ----- Transaction Tools -----"""
 # Tool 1: add a transactions to the database
 @mcp.tool
@@ -275,7 +627,7 @@ async def addTransaction(
     transaction_date: Optional[str] = None,
     notes: Optional[str] = None,
     user_id: Optional[str] = None
-):
+ ):
     """Add a new expense (debit) to the database.
     
     Creates a new expense record with required and optional fields. Generates a unique
@@ -308,6 +660,20 @@ async def addTransaction(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         # Normalize inputs
         category = utilities.normalize_category(category)
@@ -399,6 +765,20 @@ async def get_all_transactions(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         transactions = []
         db_transactions = await db_connection.fetch(
@@ -466,6 +846,20 @@ async def get_selected_transactions(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         # Convert string dates (YYYY-MM-DD) to date objects
         from datetime import datetime
@@ -545,6 +939,20 @@ async def get_total_transactions(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         checks = []
         params = []
@@ -644,6 +1052,20 @@ async def get_top_transaction_categories(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         categories_credit = []
         categories_debit = []
@@ -746,6 +1168,20 @@ async def get_summary(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         # Build WHERE clause dynamically
         where_conditions = []
@@ -910,6 +1346,20 @@ async def updateTransaction(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         # Build dynamic UPDATE query
         updates = []
@@ -1026,6 +1476,20 @@ async def monthly_report(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         # Calculate first and last day of month
         first_day = datetime(year, month, 1)
@@ -1173,6 +1637,20 @@ async def getBalance(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         QUERY = "SELECT SUM(amount) FROM transactions WHERE transaction_type=$1 AND status='completed' AND user_id = $2"
         
@@ -1237,6 +1715,20 @@ async def delete_transaction(
                 }
             }
         user_id = payload['user_id']
+            
+        # Nothing can act without verifying email
+        user = await db_connection.fetchrow(
+            "SELECT username, email_verified FROM users WHERE user_id = $1",
+            user_id
+        )
+        email_verified = utilities.check_email_verified(user)
+        if not email_verified:
+            return {
+                "result":{
+                    "status": "Error",
+                    "message": "Email address needs to be verified first"
+                }
+            }
         
         query = "DELETE FROM transactions WHERE transaction_id=$1 AND user_id=$2"
         await db_connection.execute(query, transaction_id, user_id)

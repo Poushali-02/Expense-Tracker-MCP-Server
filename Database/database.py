@@ -2,8 +2,11 @@ import asyncpg
 import os
 from dotenv import load_dotenv
 import logging
+from pathlib import Path
 
-load_dotenv()
+# Load .env from project root (works regardless of where server is started)
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")

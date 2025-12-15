@@ -7,9 +7,18 @@ from Utilities import utilities
 from Utilities.auth import AuthManager
 from Utilities.middleware import require_auth
 import uuid
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    # Pre-warm: Initialize DB pool before server accepts requests
+    await AsyncDatabase.init_pool()
+    yield
+    # Cleanup
+    await AsyncDatabase.close_pool()
 
 # Create a server instance
-mcp = FastMCP(name="Expense Tracker MCP Server")
+mcp = FastMCP(name="Transaction Tracker MCP Server", lifespan=lifespan)
 
 """ ----- Authentication Tools ----- """ 
 # Tool 1: Register user
@@ -366,7 +375,7 @@ async def addTransaction(
 async def get_all_transactions(
     token: str,
     user_id: Optional[str] = None
-):
+    ):
     """Retrieve all transactions for authenticated user from the database.
     
     Fetches all transaction records sorted by date in descending order (newest first).
@@ -429,7 +438,7 @@ async def get_selected_transactions(
     start_date: str, 
     end_date: str,
     user_id: Optional[str] = None
-):
+    ):
     """Get all transactions within a specified date range.
     
     Retrieves transactions between start_date and end_date (inclusive). Useful for

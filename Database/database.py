@@ -24,8 +24,8 @@ class AsyncDatabase:
             password=DB_PASSWORD,
             port=int(DB_PORT),
             ssl='require',
-            min_size=10,
-            max_size=20
+            min_size=1,
+            max_size=5
         )
 
     @classmethod

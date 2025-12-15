@@ -1,4 +1,6 @@
 import bcrypt
+bcrypt.gensalt()
+
 import jwt
 import os
 from datetime import datetime, timedelta

@@ -1,4 +1,4 @@
-# Expense Tracker MCP Server
+# Transaction Tracker MCP Server
 
 A comprehensive personal finance management system built with FastMCP (Model Context Protocol) for Claude Desktop integration. This server provides secure, authenticated transaction tracking with advanced analytics and reporting capabilities.
 
@@ -14,15 +14,16 @@ A comprehensive personal finance management system built with FastMCP (Model Con
 - 🔒 **User Isolation**: Each user sees only their own data
 - ⚡ **FastMCP Integration**: Seamless Claude Desktop integration
 
-## Quick Start
+## LOCAL INSTALLATION GUIDE
+IF YOU WANT TO USE THIS SERVER LOCALLY, CLONE THIS REPOSITORY AND SET IT UP AS SHOWN.
 
-### Prerequisites
+#### Prerequisites
 - Python 3.13+
 - uv
 - PostgreSQL 15+
 - Claude Desktop (for MCP integration)
 
-### Installation
+#### Installation
 
 Make sure you have uv installed in your system. This system was built using uv.
 To install uv use -
@@ -94,6 +95,52 @@ Or manually add it to your `claude_desktop_config.json`:
 3. Click "Developer" in the sidebar
 4. Click "Edit Config" to open the JSON file in your editor
 
+
+## REMOTE SERVER SETUP GUIDE
+
+THIS SERVER HAS BEEN DEPLOYED USING [fastmcp cloud](https://fastmcp.cloud) 
+FOR SETTING UP SEE THIS PART.
+
+### CLAUDE PRO USERS: INSTALLATION GUIDE
+
+If you have Claude Pro account, things are very easy.
+
+- Just go to settings (from your Profile name)
+- Click on Connectors
+- Click on "Add custom Connector"
+- On the popup add a name (e.g: "Transaction Tracker")
+- On the URL section add this url - https://transaction-tracker.fastmcp.app/mcp
+- Restart Claude
+
+### CLAUDE FREE USERS
+
+If you are a Claude Free Plan user (like me). Follow these steps
+
+1. Open Claude Developer Settings
+
+- Open Claude Desktop
+- Click your profile (bottom right) → Settings
+- Click "Developer" in the sidebar
+- Click "Edit Config" to open the JSON file in your editor
+
+2. Add this json to the file:
+
+```json
+{
+  "mcpServers": {
+    "Transaction Tracker": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://transaction-tracker.fastmcp.app/mcp"
+      ]
+    }
+  }
+}
+```
+
+# FEATURES
+
 ## Authentication
 
 ### User Registration
@@ -114,7 +161,7 @@ Here is the list of tools available right now for this server.
 
 #### Transaction Management
 5. **addTransaction** ✅ - Adds transactions to database for user
-6. **get_all_transactions** ✅ - Retrievs all transactions
+6. **get_all_transactions** ✅ - Retrieves all transactions
 7. **updateTransaction** ✅ - Updates transactions
 8. **delete_transaction** ✅ - Deletes transactions
 
@@ -125,7 +172,7 @@ Here is the list of tools available right now for this server.
 
 #### Financial Summary & Analysis
 12. **get_summary** ✅ - Generates comprehensive analysis with category breakdown
-13. **balance** ✅ - Calculates net balance
+13. **getBalance** ✅ - Calculates net balance
 14. **monthly_report** ✅ - Generates monthly report with summary statistics (example: December 2025)
 
 
@@ -171,7 +218,7 @@ Here is the list of tools available right now for this server.
 ## Dependencies
 
 - fastmcp>=2.13.3
-- psycopg2-binary>=2.9.9
+- asyncpg>=0.31.0
 - bcrypt>=4.0.0
 - pyjwt>=2.8.0
 - python-dotenv>=1.0.0

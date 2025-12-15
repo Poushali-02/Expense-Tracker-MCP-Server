@@ -28,7 +28,7 @@ async def register_user(
     email:str,
     password:str,
     full_name:str
-):
+ ):
 
     """Register a new user account.
         
@@ -570,7 +570,7 @@ async def get_total_transactions(
             placeholder_index += 1
         
         if not checks:
-            return {"result": {"status": "error", "message": "No fields to add"}}
+            return {"result": {"status": "error", "message": "getBalance tool gives the balance with no filters"}}
         
         params.append(user_id)
         user_id_placeholder = placeholder_index

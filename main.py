@@ -1,14 +1,11 @@
 from fastmcp import FastMCP
-from Database.database import get_db, AsyncDatabase
-from typing import Optional
-from pathlib import Path
+from typing import Optional, List
+from Database.database import AsyncDatabase
 import json
-from Utilities import utilities
-from Utilities.auth import AuthManager
-from Utilities.middleware import require_auth
-from Utilities.email_services import EmailService
-import uuid
 from contextlib import asynccontextmanager
+from Tools.AuthenticationTools import auth_tools
+from Tools.TransactionTools import reports
+from Tools.TransactionTools import changes
 
 @asynccontextmanager
 async def lifespan(app):
@@ -44,64 +41,14 @@ async def register_user(
         Returns:
             dict: User ID, token, and success status
     """
-    db_connection = await get_db()
+    return await auth_tools.register_user(
+        username=username,
+        email=email,
+        password=password,
+        full_name=full_name
+    )
     
-    try:
-        isValid, message = await AuthManager.validate_password_strength(password)
-        if not isValid:
-            return {
-                "result": {
-                    "status": "error",
-                    "message": f"{message}"
-                }
-            }
-            
-        # username unique?
-        USERNAME_QUERY="SELECT user_id FROM users WHERE username = $1"
-        if await db_connection.fetchrow(USERNAME_QUERY, username):
-            return {
-                "result": {
-                    "status": "error",
-                    "message": "username already exists"
-                }
-            }
-            
-        # email exists?
-        EMAIL_QUERY="SELECT user_id FROM users WHERE email = $1"
-        if await db_connection.fetchrow(EMAIL_QUERY, email):
-            return {
-                "result": {
-                    "status": "error",
-                    "message": "email already exists"
-                }
-            }
-            
-        # user id creation
-        user_id = str(uuid.uuid4())
-        
-        # hash password
-        password_hash = await AuthManager.hash_password(password)
-        EXECUTE_QUERY="""
-            INSERT INTO users(user_id, username, full_name, email, password_hash)
-            VALUES ($1, $2, $3, $4, $5)
-        """
-        await db_connection.execute(EXECUTE_QUERY, user_id, username, full_name, email, password_hash)
-        
-        token = AuthManager.create_token(user_id, username)
-        return {"result": {
-            "status": "success",
-            "user_id": user_id,
-            "username": username,
-            "token": token,
-            "message": "User registered successfully"
-        }}
     
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
 # Tool 2: Login user
 @mcp.tool
 async def login_user(
@@ -120,42 +67,12 @@ async def login_user(
     Returns:
         dict: User ID, token, and success status"""
         
-    db_connection = await get_db()
-    QUERY="SELECT user_id, password_hash FROM users WHERE username=$1 AND active=TRUE"
-
-    try:
-        result = await db_connection.fetchrow(QUERY, username)
-        if not result:
-            return {
-                "result":{
-                    "status": "error",
-                    "message": "Invalid username or password"
-                }
-            }
-        user_id = str(result['user_id'])
-        password_hash = result['password_hash']
-        # Verify password
-        if not await AuthManager.verify_password(password, password_hash):
-            return {"result": {"status": "error", "message": "Invalid username or password"}}
-        
-        token = AuthManager.create_token(user_id, username)
-        return {"result": {
-            "status": "success",
-            "user_id": user_id,
-            "username": username,
-            "token": token,
-            "message": "Login successful"
-        }}
-    except Exception as e:
-        return {
-                "result":{
-                    "status": "error",
-                    "message": f"{e}"
-                }
-            }
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
+    return await auth_tools.login_user(
+        username=username,
+        password=password
+    )
+    
+    
 # Tool 3: Verify token
 @mcp.tool
 def verify_token(
@@ -171,24 +88,8 @@ def verify_token(
     Returns:
         dict: Token validity and user info
     """
-    try:
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result":{
-                    "status": "error",
-                    "message": "Invalid or expired token"
-                }
-            }
-        return {"result": {
-            "status": "success",
-            "user_id": payload['user_id'],
-            "username": payload['username'],
-            "message": "Token is valid"
-        }}
-    
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
+    return auth_tools.verify_token(token)
+
 
 # Tool 4: Change password
 @mcp.tool
@@ -209,56 +110,13 @@ async def change_password(
     Returns:
         dict: Success or error status"""
         
-    db_connection = await get_db()
+    return await auth_tools.change_password(
+        user_id=user_id,
+        old_password=old_password,
+        new_password=new_password
+    )
     
-    try:
-        isValid, message = await AuthManager.validate_password_strength(new_password)
-        if not isValid:
-            return {
-                "result":{
-                    "status": "error",
-                    "message": f"{message}"
-                }
-            }
-        
-        # get user
-        CHECK_QUERY="SELECT password_hash FROM users WHERE user_id = $1"
-        user = await db_connection.fetchrow(CHECK_QUERY, user_id)
-        if not user:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "User not found"
-                }
-            }
-        
-        password_hash = user['password_hash']
-        
-        # verify password
-        if not await AuthManager.verify_password(old_password, password_hash):
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Wrong password"
-                }
-            }
-        
-        new_hash = await AuthManager.hash_password(new_password)
-        
-        ADD_QUERY="UPDATE users SET password_hash=$1, updated_at=CURRENT_TIMESTAMP WHERE user_id=$2"
-        await db_connection.execute(ADD_QUERY, new_hash, user_id)
-        return {
-            "result": {
-                "status": "success",
-                "message": "Password changed successfully"
-            }
-        }
-           
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-        
+    
 # Tool 5: Send Verification Code
 @mcp.tool
 async def send_verification_code(token: str):
@@ -270,81 +128,9 @@ async def send_verification_code(token: str):
     Returns:
         dict: Status of email sending
     """
-    
-    payload = AuthManager.verify_token(token)
-    if not payload:
-        return {
-            "result": {
-                "status":"Error",
-                "message": "Invalid or expired token"
-            }
-        }
-        
-    user_id = payload['user_id']
-    db_connection = await get_db()
-    
-    try:
-        user = await db_connection.fetchrow(
-            "SELECT email, username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        
-        if not user:
-            return {
-            "result": {
-                "status":"Error",
-                "message": "User not found"
-            }
-        }
-        
-        if user['email_verified']:
-            return {
-            "result": {
-                "status":"Info",
-                "message": "Email already verified"
-            }
-        }
-            
-        verification_code = EmailService.generate_code()
-        code_expires = EmailService.get_code_expiry(minutes=5)
-        
-        await db_connection.execute(
-             """UPDATE users 
-               SET verification_token = $1, verification_token_expires = $2, verification_attempts = 0 
-               WHERE user_id = $3""",
-            verification_code, code_expires, user_id
-        )
-        
-        success, message = await EmailService.send_verification_code(
-            user['email'], user['username'], verification_code
-        )
+    return await auth_tools.send_verification_code(token=token)
 
-        if success:
-            return {
-                "result": {
-                    "status": "success",
-                    "message": "Verification code sent to your email"
-                }
-            }
-        else:
-            return {
-                "result": {
-                    "status": "Error",
-                    "message": message
-                }
-            }
-    
-    except Exception as e:
-        return {
-            "result":{
-                "status": "Error",
-                "message": str(e)
-            }
-        }
-    
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-      
+
 # Tool 6 : Verify Email
 @mcp.tool
 async def verify_email(code: str):
@@ -356,84 +142,9 @@ async def verify_email(code: str):
     Returns:
         dict: Verification status
     """
-    MAX_ATTEMPTS = 3
-    db_connection = await get_db()
-    try:
-        user = await db_connection.fetchrow(
-            """SELECT user_id, username, verification_token, verification_token_expires, verification_attempts 
-               FROM users 
-               WHERE verification_token = $1""",
-            code
-        )
-        
-        # If code doesn't match, try to find user by checking all active codes and increment their attempts
-        if not user:
-            # Check if there's a user with pending verification (for attempt tracking)
-            return {
-                "result": {
-                    "status": "Error",
-                    "message": "Invalid verification code"
-                }
-            }
-        
-        # Check if max attempts exceeded
-        if user['verification_attempts'] >= MAX_ATTEMPTS:
-            # Invalidate the code
-            await db_connection.execute(
-                """UPDATE users 
-                   SET verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
-                   WHERE user_id = $1""",
-                str(user['user_id'])
-            )
-            return {
-                "result": {
-                    "status": "Error",
-                    "message": "Too many failed attempts. Please request a new verification code."
-                }
-            }
-        
-        from datetime import datetime
-        if user['verification_token_expires'] < datetime.utcnow():
-            # Clear expired code
-            await db_connection.execute(
-                """UPDATE users 
-                   SET verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
-                   WHERE user_id = $1""",
-                str(user['user_id'])
-            )
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Code expired. Request a new one"
-                }
-            }
-        
-        # Success - verify email and clear code
-        await db_connection.execute(
-            """UPDATE users 
-               SET email_verified = TRUE, verification_token = NULL, verification_token_expires = NULL, verification_attempts = 0 
-               WHERE user_id = $1""",
-            str(user['user_id'])
-        )
-        
-        return {
-            "result":{
-                "status": "success",
-                "message": "Email verified successfully"
-            }
-        }
-        
-    except Exception as e:
-        return {
-            "result": {
-                "status": "Error",
-                "message": str(e)
-            }
-        }
-    
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-        
+    return await auth_tools.verify_email(code=code)
+
+
 # Tool 7 : Forgot password (Request reset code)
 @mcp.tool
 async def forgot_password(email:str):
@@ -444,67 +155,8 @@ async def forgot_password(email:str):
     
     Returns:
         dict: Status of reset code sending 
-    """
-    
-    db_connection = await get_db()
-    
-    try:
-        user = await db_connection.fetchrow(
-            "SELECT user_id, username, email, email_verified FROM users WHERE email = $1",
-            email
-        )
-        
-        if not user:
-            return {
-                "result":{
-                    "status": "success",
-                    "message": "If this email exists, a reset code has been sent."
-                }
-            }
-            
-        # Nothing can act without verifying email
-            
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        reset_code = EmailService.generate_code()
-        code_expires = EmailService.get_code_expiry(minutes=5)
-        
-        await db_connection.execute(
-            """UPDATE users 
-               SET reset_token = $1, reset_token_expires = $2, reset_attempts = 0 
-               WHERE user_id = $3""",
-            reset_code, code_expires, str(user['user_id'])
-        )
-        
-        success, message = await EmailService.send_password_reset_code(
-            user['email'], user['username'], reset_code
-        )
-        
-        if success:
-            return {
-                "result": {
-                    "status": "success", 
-                    "message": "Reset code sent to your email"
-                }
-            }
-        else:
-            return {
-                "result": {
-                    "status": "Error", 
-                    "message": message
-                }
-            }
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
+    """    
+    return await auth_tools.forgot_password(email=email)
 
 # Tool 8 : Reset password
 @mcp.tool
@@ -518,103 +170,15 @@ async def reset_password(code:str, new_password:str):
     Returns:
         dict: Password reset status
     """
-    MAX_ATTEMPTS = 3
-    db_connection = await get_db()
-    
-    try:
-        isValid, message = await AuthManager.validate_password_strength(new_password)
-        if not isValid:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": message
-                }
-            }
-        
-        # Find user with this reset code
-        user = await db_connection.fetchrow(
-            """SELECT user_id, username, reset_token_expires, reset_attempts, email_verified 
-               FROM users 
-               WHERE reset_token = $1""",
-            code
-        )
-        
-        if not user:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid reset code"
-                }
-            }
-        
-        # Check if max attempts exceeded
-        if user['reset_attempts'] >= MAX_ATTEMPTS:
-            # Invalidate the code
-            await db_connection.execute(
-                """UPDATE users 
-                   SET reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
-                   WHERE user_id = $1""",
-                str(user['user_id'])
-            )
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Too many failed attempts. Please request a new reset code."
-                }
-            }
-        
-        from datetime import datetime
-        if user['reset_token_expires'] < datetime.utcnow():
-            # Clear expired code
-            await db_connection.execute(
-                """UPDATE users 
-                   SET reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
-                   WHERE user_id = $1""",
-                str(user['user_id'])
-            )
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Code expired. Please request a new reset code."
-                }
-            }
-            
-        # Nothing can act without verifying email
-            
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        
-        new_hash = await AuthManager.hash_password(new_password)
-        await db_connection.execute(
-            """UPDATE users 
-               SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL, reset_attempts = 0 
-               WHERE user_id = $2""",
-            new_hash, str(user['user_id'])
-        )
-        
-        return {
-            "result": {
-                "status": "success", 
-                "message": f"Password reset successfully for {user['username']}!"
-            }
-        }
-    
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
+    return await auth_tools.reset_password(
+        code=code,
+        new_password=new_password
+    )
 
 """ ----- Transaction Tools -----"""
 # Tool 1: add a transactions to the database
 @mcp.tool
-async def addTransaction(
+async def add_transaction(
     token: str,
     amount: float,
     category: str,
@@ -647,96 +211,53 @@ async def addTransaction(
     Returns:
         dict: {"result": {"status": "success", "message": "Expense added successfully"}}
     """
-    db_connection = await get_db()
+    return await changes.add_transaction(
+        token=token,
+        amount=amount,
+        category=category,
+        tags=tags,
+        payment_method=payment_method,
+        status=status,
+        transaction_type=transaction_type,
+        frequency=frequency,
+        transaction_date=transaction_date,
+        notes=notes,
+        user_id=user_id
+    )
+
+
+# Tool 2: Bulk add transactions
+@mcp.tool
+async def bulk_add_transactions(
+    token: str,
+    transactions: List[dict]
+):
+    """
+    Add multiple transactions at once.
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        # Normalize inputs
-        category = utilities.normalize_category(category)
-        
-        # Validate inputs
-        if not utilities.validate_status(status):
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid status. Use: pending, completed, cancelled"
-                }
-            }
-        
-        if not utilities.validate_frequency(frequency):
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid frequency. Use: none, daily, weekly, monthly, yearly"
-                    
-                }
-            }
-        
-        # Build dynamic query with asyncpg placeholders
-        params = ['amount', 'transaction_type', 'category', 'tags', 'payment_method', 'status']
-        vals = [amount, transaction_type.lower(), category.lower(), tags.lower(), payment_method.lower(), status.lower()]
-        
-        if frequency:
-            params.append('frequency')
-            vals.append(frequency.lower())
-        
-        if transaction_date:
-            from datetime import datetime
-            params.append('transaction_date')
-            # Convert string date (YYYY-MM-DD) to date object
-            date_obj = datetime.strptime(transaction_date, '%Y-%m-%d').date()
-            vals.append(date_obj)
-        
-        if notes:
-            params.append('notes')
-            vals.append(notes.lower())
-        
-        params.insert(0, 'user_id')
-        vals.insert(0, user_id)
-
-        # Create asyncpg placeholders ($1, $2, $3, ...)
-        placeholders = ', '.join([f'${i+1}' for i in range(len(vals))])
-        query = f"INSERT INTO transactions({', '.join(params)}) VALUES ({placeholders})"
-        
-        await db_connection.execute(query, *vals)
-        
-        return {
-            "result": {
-                "status": "success",
-                "message": "Expense added successfully"
-            }
-        }
-        
-    except Exception as e:
-        return {"result":{"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
-# Tool 2: get all transactions from db
+    Args:
+        token (str): JWT authentication token
+        transactions (List[dict]): List of transaction objects, each containing:
+            - amount (float): Required
+            - category (str): Required
+            - tags (str): Required
+            - payment_method (str): Required
+            - status (str): Required
+            - transaction_type (str): Required ('expense' or 'credit')
+            - frequency (str, optional): 'none', 'daily', 'weekly', 'monthly', 'yearly'
+            - transaction_date (str, optional): 'YYYY-MM-DD' format
+            - notes (str, optional)
+    
+    Returns:
+        dict: Summary of added transactions with success/failure counts
+    """
+    return await changes.bulk_add_transactions(
+        token=token,
+        transactions=transactions
+    )
+    
+    
+# Tool 3: get all transactions from db
 @mcp.tool
 async def get_all_transactions(
     token: str,
@@ -751,65 +272,11 @@ async def get_all_transactions(
     Returns:
         dict: Transactions list with status and message
     """
-    db_connection = await get_db()
-    
-    try:
-        
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        transactions = []
-        db_transactions = await db_connection.fetch(
-                """SELECT * FROM transactions WHERE user_id=$1 ORDER BY transaction_date DESC;""", user_id
-            )
-        for row in db_transactions:
-            transaction = {
-                "Id": str(row['transaction_id']),
-                "Type": row['transaction_type'],
-                "Date": str(row['transaction_date']),
-                "Amount": float(row['amount']) if row['amount'] else 0,
-                "Category": str(row['category']),
-                "Tags": row['tags'],
-                "Notes": row['notes'],
-                "Payment Method": row['payment_method'],
-                "Status": row['status'],
-                "Frequency": row['frequency'],
-                "Created": str(row['created_at']),
-                "Updated": str(row['updated_at'])
-            }
-            transactions.append(transaction)
-        return {"result":{
-            "status": "success", 
-            "transactions":transactions,
-            "message": "Transactions tracked"
-        }}
-    
-    except Exception as e:
-        return {"result":{"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
+    return await reports.get_all_transactions(
+        token=token,
+        user_id=user_id
+    )
+
 
 # Tool 3: get date wise transactions
 @mcp.tool
@@ -832,78 +299,14 @@ async def get_selected_transactions(
     Returns:
         dict: Transactions list in date range with status and message
     """
-    db_connection = await get_db()
+    return await reports.get_selected_transactions(
+        token=token,
+        start_date=start_date,
+        end_date=end_date,
+        user_id=user_id
+    )
     
-    try:
-        
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        # Convert string dates (YYYY-MM-DD) to date objects
-        from datetime import datetime
-        start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-        
-        # Build and execute SELECT query
-        query = f"SELECT * FROM transactions WHERE transaction_date BETWEEN $1 AND $2 AND user_id=$3 ORDER BY transaction_date DESC;"
-        transactions = []
-        db_transactions = await db_connection.fetch(query, start_date_obj, end_date_obj, user_id)
-        for row in db_transactions:
-            transaction = {
-                "Id": str(row['transaction_id']),
-                "Type": row['transaction_type'],
-                "Date": str(row['transaction_date']),
-                "Amount": float(row['amount']) if row['amount'] else 0,
-                "Category": str(row['category']),
-                "Tags": row['tags'],
-                "Notes": row['notes'],
-                "Payment Method": row['payment_method'],
-                "Status": row['status'],
-                "Frequency": row['frequency'],
-                "Created": str(row['created_at']),
-                "Updated": str(row['updated_at'])
-            }
-            transactions.append(transaction)
-        if transactions:
-            return {"result":{
-                "status": "success", 
-                "transactions":transactions,
-                "message": "Transactions tracked"
-            }}
-        else:
-            return {"result":{
-                "status": "success", 
-                "message": "No transactions in given dates"
-            }}
     
-    except Exception as e:
-        return {"result":{"status": "error", "message": str(e)}}
-    
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-       
 # Tool 4: get total expense
 @mcp.tool
 async def get_total_transactions(
@@ -926,104 +329,16 @@ async def get_total_transactions(
     Returns:
         dict: Total amount with status and message
     """
-    db_connection = await get_db()
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        checks = []
-        params = []
-        placeholder_index = 1
-        
-        # Convert string dates to date objects if provided
-        from datetime import datetime
-        if start_date is not None: 
-            checks.append(f"transaction_date >= ${placeholder_index}")
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-            params.append(start_date_obj)
-            placeholder_index += 1
-            
-        if end_date is not None:
-            checks.append(f"transaction_date <= ${placeholder_index}")
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-            params.append(end_date_obj)
-            placeholder_index += 1
-            
-        if category is not None:
-            checks.append(f"category = ${placeholder_index}")
-            params.append(category.lower())
-            placeholder_index += 1
-        
-        if not checks:
-            return {"result": {"status": "error", "message": "getBalance tool gives the balance with no filters"}}
-        
-        params.append(user_id)
-        user_id_placeholder = placeholder_index
-        
-        # For Debit
-        DEBIT_QUERY = f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='expense' AND user_id=${user_id_placeholder} ORDER BY transaction_date DESC"
-        db_expenses = await db_connection.fetch(DEBIT_QUERY, *params)
-        expenses = 0
-        for row in db_expenses:
-            expenses += float(row['amount']) if row['amount'] else 0
-        
-        # For credit
-        CREDIT_QUERY = f"SELECT * FROM transactions WHERE {' AND '.join(checks)} AND transaction_type='credit' AND user_id=${user_id_placeholder} ORDER BY transaction_date DESC"
-        db_credits = await db_connection.fetch(CREDIT_QUERY, *params)
-        credits = 0
-        
-        for row in db_credits:
-            credits += float(row['amount']) if row['amount'] else 0
-        
-        if expenses or credits:
-            return {"result":{
-                "status": "success", 
-                "expense":expenses,
-                "credits": credits,
-                "Balance": credits - expenses,
-                "message": "Total transactions returned successfully"
-            }}
-        else:
-            return {
-                "result":{
-                    "status": "success", 
-                    "message": "No transaction to return"
-                }
-            }
-
-    except Exception as e:
-        return {
-            "result": {
-                "status": "error",
-                "message": f"{e}"
-            }
-        }
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
+    return await reports.get_total_transactions(
+        token=token,
+        start_date=start_date,
+        end_date=end_date,
+        category=category,
+        user_id=user_id
+    )
+    
+    
 # Tool 5: get top category transactions
 @mcp.tool
 async def get_top_transaction_categories(
@@ -1038,87 +353,11 @@ async def get_top_transaction_categories(
     Returns:
         dict: List of top 5 transactions with details
     """
-    db_connection = await get_db()
-    
-    try:
-        
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        categories_credit = []
-        categories_debit = []
-        
-        # Filter for expenses
-        DEBIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='expense' AND user_id=$1 ORDER BY amount DESC LIMIT 5"
-        db_expenses = await db_connection.fetch(DEBIT_QUERY, user_id)
-        
-        for row in db_expenses:
-            expense = {
-                "Id": str(row['transaction_id']),
-                "Type": row['transaction_type'],
-                "Date": str(row['transaction_date']),
-                "Amount": float(row['amount']) if row['amount'] else 0,
-                "Category": row['category'],
-                "Tags": row['tags'],
-                "Notes": row['notes'],
-                "Payment Method": row['payment_method'],
-                "Status": row['status']
-            }
-            categories_debit.append(expense)
-        
-        
-        # Filter for credits
-        CREDIT_QUERY = "SELECT * FROM transactions WHERE transaction_type='credit' AND user_id=$1 ORDER BY amount DESC LIMIT 5"
-        db_credits = await db_connection.fetch(CREDIT_QUERY, user_id)
-        
-        for row in db_credits:
-            credit = {
-                "Id": str(row['transaction_id']),
-                "Type": row['transaction_type'],
-                "Date": str(row['transaction_date']),
-                "Amount": float(row['amount']) if row['amount'] else 0,
-                "Category": row['category'],
-                "Tags": row['tags'],
-                "Notes": row['notes'],
-                "Payment Method": row['payment_method'],
-                "Status": row['status']
-            }
-            categories_credit.append(credit)
-        
-        
-        return {"result": {
-            "status": "success", 
-            "expenses": categories_debit,
-            "credits": categories_credit,
-            "message": f"Top most transactions tracked"
-        }}
-    
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
+    return await reports.get_top_transaction_categories(
+        token=token,
+        user_id=user_id
+    )
+
 
 # Tool 6: get summary of transactions
 @mcp.tool
@@ -1153,154 +392,23 @@ async def get_summary(
     Returns:
         dict: Transactions list with summary statistics (total, count, average, category breakdown)
     """
+    return await reports.get_summary(
+        token=token,
+        transaction_type=transaction_type,
+        category=category,
+        tags=tags,
+        payment_method=payment_method,
+        status=status,
+        frequency=frequency,
+        start_date=start_date,
+        end_date=end_date,
+        user_id=user_id
+    )
     
-    db_connection = await get_db()
     
-    try:
-        
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        # Build WHERE clause dynamically
-        where_conditions = []
-        params = []
-        placeholder_index = 1
-        
-        # Convert string dates to date objects if provided
-        from datetime import datetime
-        if start_date and end_date:
-            where_conditions.append(f"transaction_date BETWEEN ${placeholder_index} AND ${placeholder_index + 1}")
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-            params.extend([start_date_obj, end_date_obj])
-            placeholder_index += 2
-        
-        if category:
-            where_conditions.append(f"category = ${placeholder_index}")
-            params.append(category.lower())
-            placeholder_index += 1
-        
-        if tags:
-            where_conditions.append(f"tags = ${placeholder_index}")
-            params.append(tags)
-            placeholder_index += 1
-        
-        if payment_method:
-            where_conditions.append(f"payment_method = ${placeholder_index}")
-            params.append(payment_method)
-            placeholder_index += 1
-        
-        if status:
-            where_conditions.append(f"status = ${placeholder_index}")
-            params.append(status)
-            placeholder_index += 1
-        
-        if frequency:
-            where_conditions.append(f"frequency = ${placeholder_index}")
-            params.append(frequency)
-            placeholder_index += 1
-        
-        if transaction_type:
-            where_conditions.append(f"transaction_type = ${placeholder_index}")
-            params.append(transaction_type)
-            placeholder_index += 1
-        
-        where_conditions.append(f"user_id=${placeholder_index}")
-        params.append(user_id)
-        
-        where_clause = " AND ".join(where_conditions) if where_conditions else "user_id=$1"
-        if not where_conditions:
-            params = [user_id]
-        
-        # Get all matching transactions
-        query = f"SELECT * FROM transactions WHERE {where_clause} ORDER BY transaction_date DESC"
-        db_items = await db_connection.fetch(query, *params)
-        
-        if not db_items:
-            return {"result": {
-                "status": "success",
-                "message": "No transactions match the given criteria",
-                "summary": {
-                    "total_amount": 0,
-                    "count": 0,
-                    "average": 0,
-                    "category_breakdown": {}
-                }
-            }}
-        
-        # Process transactions and calculate analytics
-        transactions = []
-        total_amount = 0
-        category_totals = {}
-        
-        for row in db_items:
-            transaction = {
-                "Id": str(row['transaction_id']),
-                "Type": row['transaction_type'],
-                "Date": str(row['transaction_date']),
-                "Amount": float(row['amount']) if row['amount'] else 0,
-                "Category": str(row['category']),
-                "Tags": row['tags'],
-                "Notes": row['notes'],
-                "Payment Method": row['payment_method'],
-                "Status": row['status'],
-                "Frequency": row['frequency'],
-                "Created": str(row['created_at']),
-                "Updated": str(row['updated_at'])
-            }
-            transactions.append(transaction)
-            total_amount += transaction["Amount"]
-            
-            # Calculate category totals
-            cat = transaction["Category"]
-            category_totals[cat] = category_totals.get(cat, 0) + transaction["Amount"]
-        
-        # Calculate statistics
-        count = len(transactions)
-        average = round(total_amount / count, 2) if count > 0 else 0
-        
-        return {"result": {
-            "status": "success",
-            "transactions": transactions,
-            "summary": {
-                "total_amount": round(total_amount, 2),
-                "count": count,
-                "average": average,
-                "category_breakdown": {cat: round(amt, 2) for cat, amt in category_totals.items()}
-            },
-            "message": f"Found {count} transactions with total amount Rs {total_amount:.2f}"
-        }}
-    
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
 # Tool 7: update a single transaction
 @mcp.tool
-async def updateTransaction(
+async def update_transaction(
     token: str,
     transaction_id: str,
     amount: Optional[float] = None,
@@ -1333,110 +441,50 @@ async def updateTransaction(
     Returns:
         dict: Success or error message with status
     """
-    db_connection = await get_db()
+    return await changes.update_transaction(
+        token=token,
+        transaction_id=transaction_id,
+        amount=amount,
+        category=category,
+        tags=tags,
+        payment_method=payment_method,
+        status=status,
+        frequency=frequency,
+        transaction_date=transaction_date,
+        notes=notes,
+        transaction_type=transaction_type,
+        user_id=user_id
+    )
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        # Build dynamic UPDATE query
-        updates = []
-        params = []
-        placeholder_index = 1
-        
-        if amount is not None:
-            updates.append(f"amount = ${placeholder_index}")
-            params.append(amount)
-            placeholder_index += 1
-        
-        if category is not None:
-            updates.append(f"category = ${placeholder_index}")
-            params.append(category.lower())
-            placeholder_index += 1
-        
-        if transaction_date is not None:
-            updates.append(f"transaction_date = ${placeholder_index}")
-            params.append(transaction_date)
-            placeholder_index += 1
-            
-        if tags is not None:
-            updates.append(f"tags = ${placeholder_index}")
-            params.append(tags.lower())
-            placeholder_index += 1
-        
-        if payment_method is not None:
-            updates.append(f"payment_method = ${placeholder_index}")
-            params.append(payment_method.lower())
-            placeholder_index += 1
-        
-        if status is not None:
-            updates.append(f"status = ${placeholder_index}")
-            params.append(status.lower())
-            placeholder_index += 1
-            
-        if frequency is not None:
-            updates.append(f"frequency = ${placeholder_index}")
-            params.append(frequency.lower())
-            placeholder_index += 1
-        
-        if notes is not None:
-            updates.append(f"notes = ${placeholder_index}")
-            params.append(notes.lower())
-            placeholder_index += 1
-        
-        if transaction_type is not None:
-            updates.append(f"transaction_type = ${placeholder_index}")
-            params.append(transaction_type.lower())
-            placeholder_index += 1
-            
-        if not updates:
-            return {"result": {"status": "error", "message": "No fields to update"}}
-        
-        # Verify transaction exists for this user
-        verify_query = "SELECT transaction_id FROM transactions WHERE transaction_id = $1 AND user_id = $2"
-        existing = await db_connection.fetchrow(verify_query, transaction_id, user_id)
-        if not existing:
-            return {"result": {"status": "error", "message": f"Transaction {transaction_id} not found"}}
-        
-        # Add transaction_id and user_id as final parameters
-        params.append(transaction_id)
-        params.append(user_id)
-        
-        # Build and execute UPDATE query
-        query = f"UPDATE transactions SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ${placeholder_index} AND user_id = ${placeholder_index + 1}"
-        
-        await db_connection.execute(query, *params)
-        
-        return {"result": {"status": "success", "message": "Expense updated successfully"}}
     
-    except Exception as e:
-        return {"result": {"status": "error", "message": str(e)}}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
-# Tool 8: get monthly report
+# Tool 8: Bulk update transactions
+@mcp.tool
+async def bulk_update_transactions(
+    token: str,
+    transactions: List[dict],
+    user_id: Optional[str] = None
+):
+    """
+    Update multiple transactions at once.
+    
+    Args:
+        token (str): JWT authentication token
+        transactions (List[dict]): List of transaction objects, each must contain:
+            - transaction_id (str): Required - ID of transaction to update
+            - Plus any fields to update: amount, category, tags, payment_method, 
+              status, frequency, transaction_date, notes, transaction_type
+    
+    Returns:
+        dict: Summary with success_count, failed_count, and any errors
+    """
+    return await changes.bulk_update_transactions(
+        token=token,
+        transactions=transactions,
+        user_id=user_id
+    )
+    
+    
+# Tool 9: get monthly report
 @mcp.tool
 async def monthly_report(
     token: str,
@@ -1461,157 +509,17 @@ async def monthly_report(
         monthly_report(year=2025, month=12)
         # Returns all December 2025 transactions with analytics
     """
-    from datetime import datetime, timedelta
+    return await reports.monthly_report(
+        token=token,
+        year=year,
+        month=month,
+        user_id=user_id
+    )
     
-    db_connection = await get_db()
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        # Calculate first and last day of month
-        first_day = datetime(year, month, 1)
-        if month == 12:
-            last_day = datetime(year + 1, 1, 1) - timedelta(days=1)
-        else:
-            last_day = datetime(year, month + 1, 1) - timedelta(days=1)
-        
-        # Convert to date objects (not strings) for database query
-        start_date = first_day.date()
-        end_date = last_day.date()
-        month_name = first_day.strftime('%B')
-        
-        CREDIT_QUERY = """SELECT * FROM transactions WHERE transaction_date >= $1 AND transaction_date <= $2 
-                   AND transaction_type='credit'
-                   AND user_id = $3
-                   ORDER BY transaction_date DESC"""
-                   
-        DEBIT_QUERY = """SELECT * FROM transactions WHERE transaction_date >= $1 AND transaction_date <= $2 
-                   AND transaction_type='expense'
-                   AND user_id = $3
-                   ORDER BY transaction_date DESC"""
-                   
-        params = [start_date, end_date, user_id]
-        
-        db_credits = await db_connection.fetch(CREDIT_QUERY, *params)
-        db_expenses = await db_connection.fetch(DEBIT_QUERY, *params)
-        
-        if (not db_credits or len(db_credits) == 0) and (not db_expenses or len(db_expenses) == 0):
-            return {"result": {
-                "status": "success",
-                "month": month_name,
-                "year": year,
-                "message": f"No transactions found for {month_name} {year}",
-                "summary": {
-                    "total_expense": 0,
-                    "total_credited": 0
-                }
-            }}
-        
-        # Process expenses and calculate analytics
-        expenses = []
-        total_expense = 0
-        
-        credits = []
-        total_credit = 0
-        
-        for row in db_expenses:
-            try:
-                expense = {
-                    "Id": str(row['transaction_id']),
-                    "Type": str(row['transaction_type']),
-                    "Date": str(row['transaction_date']),
-                    "Amount": float(row['amount']) if row['amount'] is not None else 0,
-                    "Category": str(row['category']),
-                    "Tags": str(row['tags']) if row['tags'] else "",
-                    "Notes": str(row['notes']) if row['notes'] else "",
-                    "Payment Method": str(row['payment_method']),
-                    "Status": str(row['status'])
-                }
-                expenses.append(expense)
-                total_expense += expense["Amount"]
-            except (KeyError, TypeError, ValueError) as e:
-                continue
-            
-        for row in db_credits:
-            try:
-                credit = {
-                    "Id": str(row['transaction_id']),
-                    "Type": str(row['transaction_type']),
-                    "Date": str(row['transaction_date']),
-                    "Amount": float(row['amount']) if row['amount'] is not None else 0,
-                    "Category": str(row['category']),
-                    "Tags": str(row['tags']) if row['tags'] else "",
-                    "Notes": str(row['notes']) if row['notes'] else "",
-                    "Payment Method": str(row['payment_method']),
-                    "Status": str(row['status'])
-                }
-                credits.append(credit)
-                total_credit += credit["Amount"]
-            except (KeyError, TypeError, ValueError) as e:
-                continue
-        
-        if (not expenses or len(expenses) == 0) and (not credits or len(credits) == 0):
-            return {"result": {
-                "status": "success",
-                "month": month_name,
-                "year": year,
-                "message": f"No transactions found for {month_name} {year}",
-                "summary": {
-                    "total_expense": 0,
-                    "total_credited": 0
-                }
-            }}
-        
-        count_exp = len(expenses)
-        count_cred = len(credits)
-        
-        return {"result": {
-            "status": "success",
-            "month": month_name,
-            "year": year,
-            "expenses": expenses,
-            "credits": credits,
-            "summary": {
-                "total_expense": round(total_expense, 2),
-                "total_credited": round(total_credit, 2)
-            },
-            "message": f"Monthly report for {month_name} {year}: {count_exp} expenses totaling Rs {total_expense:.2f} and {count_cred} credits totaling Rs {total_credit:.2f}"
-        }}
-    
-    except Exception as e:
-        return {"result": {
-            "status": "error",
-            "message": str(e)
-        }}
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-        
-# Tool 9: get balance
+# Tool 10: get balance
 @mcp.tool
-async def getBalance(
+async def get_balance(
     token: str,
     user_id: Optional[str] = None
 ):
@@ -1624,66 +532,12 @@ async def getBalance(
     Returns:
         dict: Total credits, total expenses, and net balance
     """
-    db_connection = await get_db()
+    return await reports.get_balance(
+        token=token,
+        user_id=user_id
+    )
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        QUERY = "SELECT SUM(amount) FROM transactions WHERE transaction_type=$1 AND status='completed' AND user_id = $2"
-        
-        # for debit
-        expense_result = await db_connection.fetchval(QUERY, 'expense', user_id)
-        expense = float(expense_result) if expense_result else 0
-        
-        # for credit
-        credit_result = await db_connection.fetchval(QUERY, 'credit', user_id)
-        credit = float(credit_result) if credit_result else 0
-        
-        total_balance = credit - expense
-        return {"result": {
-            "status": "success",
-            "summary": {
-                "total_credits": round(credit, 2),
-                "total_expenses": round(expense, 2),
-                "net_balance": round(total_balance, 2)
-            },
-            "message": f"Balance: Rs {total_balance:.2f}"
-        }}
-        
-    except Exception as e:
-        return {
-            "result": {
-                "status": "error",
-                "message": f"{e}"
-            }
-        }
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
-
-# Tool 10: delete a transaction
+# Tool 11: delete a transaction
 @mcp.tool
 async def delete_transaction(
     token: str,
@@ -1701,54 +555,38 @@ async def delete_transaction(
     Returns:
         dict: Status and message confirming deletion or error
     """
+    return await changes.delete_transaction(
+        token=token,
+        transaction_id=transaction_id,
+        user_id=user_id
+    )
     
-    db_connection = await get_db()
     
-    try:
-        # Authenticate user
-        payload = AuthManager.verify_token(token)
-        if not payload:
-            return {
-                "result": {
-                    "status": "error", 
-                    "message": "Invalid or expired token"
-                }
-            }
-        user_id = payload['user_id']
-            
-        # Nothing can act without verifying email
-        user = await db_connection.fetchrow(
-            "SELECT username, email_verified FROM users WHERE user_id = $1",
-            user_id
-        )
-        email_verified = utilities.check_email_verified(user)
-        if not email_verified:
-            return {
-                "result":{
-                    "status": "Error",
-                    "message": "Email address needs to be verified first"
-                }
-            }
-        
-        query = "DELETE FROM transactions WHERE transaction_id=$1 AND user_id=$2"
-        await db_connection.execute(query, transaction_id, user_id)
-        return {
-            "result" : {
-                "status": "success",
-                "message": "Deleted transaction successfully"
-            }
-        }
-    except Exception as e:
-        return {
-            "result" : {
-                "status": "error",
-                "message": f"{e}"
-            }
-        }
-    finally:
-        await AsyncDatabase.get_pool().release(db_connection)
+# Tool 12: delete bulk
+@mcp.tool
+async def bulk_delete_transaction(
+    token:str,
+    transaction_ids:List[str],
+    user_id:Optional[str] = None
+):
+    """
+    Delete multiple transactions at once.
+    
+    Args:
+        token (str): JWT authentication token
+        transaction_ids (List[str]): List of transaction id as str
+    
+    Returns:
+        dict: Summary of deleted transactions with success/failure counts
+    
+    """
+    return await changes.bulk_delete_transactions(
+        token=token,
+        transaction_ids=transaction_ids,
+        user_id=user_id
+    )
 
-
+    
 """ ----- Resources -----"""
 # Resource 1: categories list
 import os
@@ -1771,6 +609,78 @@ def categories():
             return categories_data
     except FileNotFoundError:
         return {"error": f"categories.json not found at {CATEGORIES_PATH}"}
+
+
+# Resource Template 2: Get subcategories for a specific category
+@mcp.resource("expense://category/{category_name}", mime_type="application/json")
+def category_subcategories(category_name: str):
+    """Get subcategories/tags for a specific expense category.
+    
+    Args:
+        category_name: Name of the category (e.g., 'food', 'transport', 'health')
+    
+    Returns:
+        list: Available subcategories/tags for the specified category
+    """
+    try:
+        with open(CATEGORIES_PATH, 'r') as f:
+            categories_data = json.load(f)
+            if category_name.lower() in categories_data:
+                return {
+                    "category": category_name.lower(),
+                    "subcategories": categories_data[category_name.lower()]
+                }
+            return {"error": f"Category '{category_name}' not found"}
+    except FileNotFoundError:
+        return {"error": "categories.json not found"}
+
+
+# Resource Template 3: Get valid payment methods
+@mcp.resource("expense://payment-methods", mime_type="application/json")
+def payment_methods():
+    """Get list of valid payment methods.
+    
+    Returns:
+        list: Available payment methods for transactions
+    """
+    return {
+        "payment_methods": [
+            "cash",
+            "card",
+            "upi",
+            "bank",
+            "wallet",
+            "cheque",
+            "other"
+        ]
+    }
+
+
+# Resource Template 4: Get valid status options
+@mcp.resource("expense://statuses", mime_type="application/json")
+def statuses():
+    """Get list of valid transaction statuses.
+    
+    Returns:
+        list: Available status options for transactions
+    """
+    return {
+        "statuses": ["pending", "completed", "cancelled"]
+    }
+
+
+# Resource Template 5: Get valid frequency options
+@mcp.resource("expense://frequencies", mime_type="application/json")
+def frequencies():
+    """Get list of valid frequency options for recurring transactions.
+    
+    Returns:
+        list: Available frequency options
+    """
+    return {
+        "frequencies": ["none", "daily", "weekly", "monthly", "yearly"]
+    }
+
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8000)

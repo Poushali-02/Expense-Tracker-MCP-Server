@@ -178,6 +178,31 @@ async def reset_password(code:str, new_password:str):
         new_password=new_password
     )
 
+
+# Tool 9: Delete account
+@mcp.tool
+async def delete_account(
+    token:str
+):
+    """Permanently delete user account and all associated data.
+    
+    Removes the user account and all their transactions from the database.
+    This action cannot be undone. Requires email to be verified before deletion.
+    
+    Args:
+        token (str): Valid JWT authentication token (required)
+    
+    Returns:
+        dict: Status confirming account deletion or error message
+    
+    Warning:
+        - This operation is irreversible
+        - All user transactions will be permanently deleted (CASCADE)
+        - User must be logged in with valid token
+        - Email must be verified before account can be deleted
+    """
+    return await auth_tools.delete_account(token=token)
+
 """ ----- Transaction Tools -----"""
 # Tool 1: add a transactions to the database
 @mcp.tool

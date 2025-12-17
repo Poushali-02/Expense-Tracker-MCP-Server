@@ -8,11 +8,7 @@ from pathlib import Path
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
-DB_HOST = os.getenv("DB_HOST")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_PORT = os.getenv("DB_PORT", 5433)
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 class AsyncDatabase:
     _pool = None
@@ -21,11 +17,7 @@ class AsyncDatabase:
     async def init_pool(cls):
         """Initialize Connection pool"""
         cls._pool = await asyncpg.create_pool(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            port=int(DB_PORT),
+            dsn=DATABASE_URL,
             ssl='require',
             min_size=1,
             max_size=5

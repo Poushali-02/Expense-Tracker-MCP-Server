@@ -3,6 +3,7 @@ from Database.database import get_db, AsyncDatabase
 import uuid
 from Utilities.email_services import EmailService
 from Utilities import utilities
+from typing import Optional
 
 
 """Register a user"""
@@ -528,3 +529,66 @@ async def reset_password(code:str, new_password:str):
     finally:
         await AsyncDatabase.get_pool().release(db_connection)
 
+
+
+"""Delete a user account"""
+async def delete_account(
+    token:str
+):
+    payload = AuthManager.verify_token(token)
+    if not payload:
+        return {
+            "result": {
+                "status":"Error",
+                "message": "Invalid or expired token"
+            }
+        }
+    db_connection = await get_db()
+    user_id = payload['user_id']
+    try:
+        user = await db_connection.fetchrow(
+            """
+            SELECT username, active, email_verified FROM users WHERE user_id=$1
+            """,
+            user_id
+        )
+        # if user doesn't exist
+        if not user:
+            return {
+                "result": {
+                    "status": "error",
+                    "message": "User not found"
+                }
+            }
+        
+        # if user email is not verified
+        if not user['email_verified']:
+            return {
+                "result": {
+                    "status": "error",
+                    "message": "Email not verified"
+                }
+            }
+        
+        QUERY = "DELETE FROM users WHERE user_id=$1"
+        await db_connection.execute(
+            QUERY, user_id
+        )
+        
+        return {
+            "result": {
+                "status": "success",
+                "message": f"Deleted account of {user['username']} successfully"
+            }
+        }
+        
+    except Exception as e:
+        return {
+                "result": {
+                    "status": "error",
+                    "message": str(e)
+                }
+            }
+    
+    finally:
+        await AsyncDatabase.get_pool().release(db_connection)

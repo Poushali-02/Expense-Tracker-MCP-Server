@@ -6,6 +6,9 @@ from contextlib import asynccontextmanager
 from Tools.AuthenticationTools import auth_tools
 from Tools.TransactionTools import reports
 from Tools.TransactionTools import changes
+from Prompts.transaction_guide import transaction_guide
+from Prompts.transaction_rules import transaction_rules
+from Prompts.validate import validate
 
 @asynccontextmanager
 async def lifespan(app):
@@ -681,6 +684,27 @@ def frequencies():
         "frequencies": ["none", "daily", "weekly", "monthly", "yearly"]
     }
 
+
+""" ----- Prompts -----"""
+
+# Prompt 1: Guide for adding transactions
+@mcp.prompt()
+def add_transaction_guide():
+    """Guidelines for adding transactions with valid values"""
+    return transaction_guide()
+
+# Prompt 2: Transaction management rules
+@mcp.prompt()
+def get_transaction_rules():
+    """Rules and constraints for managing transactions"""
+    return transaction_rules()
+
+
+# Prompt 3: Quick reference for valid values
+@mcp.prompt()
+def valid_values_reference():
+    """Quick reference for all valid transaction field values"""
+    return validate()
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8000)

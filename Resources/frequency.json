@@ -1,0 +1,9 @@
+{
+    "frequencies": [
+        "none", 
+        "daily", 
+        "weekly", 
+        "monthly", 
+        "yearly"
+    ]
+}

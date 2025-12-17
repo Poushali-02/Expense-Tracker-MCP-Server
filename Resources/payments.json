@@ -1,0 +1,11 @@
+{
+    "payment_methods": [
+        "cash",
+        "card",
+        "upi",
+        "bank",
+        "wallet",
+        "cheque",
+        "other"
+    ]
+}

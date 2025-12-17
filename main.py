@@ -594,6 +594,12 @@ async def bulk_delete_transaction(
 # Resource 1: categories list
 import os
 CATEGORIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources', 'categories.json')
+FREQUENCY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources', 'frequency.json')
+PAYMENTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources', 'payments.json')
+STATUS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources', 'status.json')
+
+with open(CATEGORIES_PATH, 'r') as f:
+    CATEGORIES_DATA = json.load(f)
 
 @mcp.resource("expense://categories", mime_type="application/json")
 def categories():
@@ -607,9 +613,7 @@ def categories():
         list/dict: Available expense categories in JSON format
     """
     try:
-        with open(CATEGORIES_PATH, 'r') as f:
-            categories_data = json.load(f)
-            return categories_data
+            return CATEGORIES_DATA
     except FileNotFoundError:
         return {"error": f"categories.json not found at {CATEGORIES_PATH}"}
 
@@ -626,14 +630,12 @@ def category_subcategories(category_name: str):
         list: Available subcategories/tags for the specified category
     """
     try:
-        with open(CATEGORIES_PATH, 'r') as f:
-            categories_data = json.load(f)
-            if category_name.lower() in categories_data:
-                return {
-                    "category": category_name.lower(),
-                    "subcategories": categories_data[category_name.lower()]
-                }
-            return {"error": f"Category '{category_name}' not found"}
+        if category_name.lower() in CATEGORIES_DATA:
+            return {
+                "category": category_name.lower(),
+                "subcategories": CATEGORIES_DATA[category_name.lower()]
+            }
+        return {"error": f"Category '{category_name}' not found"}
     except FileNotFoundError:
         return {"error": "categories.json not found"}
 
@@ -646,17 +648,12 @@ def payment_methods():
     Returns:
         list: Available payment methods for transactions
     """
-    return {
-        "payment_methods": [
-            "cash",
-            "card",
-            "upi",
-            "bank",
-            "wallet",
-            "cheque",
-            "other"
-        ]
-    }
+    try:
+        with open(PAYMENTS_PATH, 'r') as f:
+            payment_meth = json.load(f)
+            return payment_meth
+    except FileNotFoundError:
+        return {"error": f"payments.json not found at {PAYMENTS_PATH}"}
 
 
 # Resource Template 4: Get valid status options
@@ -667,9 +664,13 @@ def statuses():
     Returns:
         list: Available status options for transactions
     """
-    return {
-        "statuses": ["pending", "completed", "cancelled"]
-    }
+    try:
+        with open(STATUS_PATH, 'r') as f:
+            status_data = json.load(f)
+            return status_data
+    except FileNotFoundError:
+        return {"error": f"status.json not found at {STATUS_PATH}"}
+
 
 
 # Resource Template 5: Get valid frequency options
@@ -680,9 +681,13 @@ def frequencies():
     Returns:
         list: Available frequency options
     """
-    return {
-        "frequencies": ["none", "daily", "weekly", "monthly", "yearly"]
-    }
+    try:
+        with open(FREQUENCY_PATH, 'r') as f:
+            frequncy_data = json.load(f)
+            return frequncy_data
+    except FileNotFoundError:
+        return {"error": f"frequency.json not found at {FREQUENCY_PATH}"}
+
 
 
 """ ----- Prompts -----"""

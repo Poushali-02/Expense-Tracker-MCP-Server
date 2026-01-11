@@ -2,6 +2,10 @@
 
 A comprehensive personal finance management system built with FastMCP (Model Context Protocol) for Claude Desktop integration. This server provides secure, authenticated transaction tracking with advanced analytics and reporting capabilities.
 
+
+[![Live Demo](https://img.shields.io/badge/Demo-Live-success)](https://paisa-flow.vercel.app/)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+
 ## Features
 
 - 🔐 **Secure Authentication**: JWT-based user authentication with password hashing
@@ -229,4 +233,5 @@ For questions or issues:
 - Open an issue on GitHub
 - Check the documentation in this README
 - Review the code comments for implementation details
+
 - Please don't judge
